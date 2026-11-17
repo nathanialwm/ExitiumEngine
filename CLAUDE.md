@@ -33,7 +33,6 @@ Exitium is a performance-first 2D game engine in Rust. **Its primary user is an 
 - `cargo build --workspace --target wasm32-unknown-unknown` passes for wasm-capable crates.
 - No benchmark regression over 5%.
 - Docs and MCP tool schemas are updated when behavior changed.
-- The graph has been refreshed (the pre-push hook does this).
 
 `cargo xtask ci all` runs the fmt, clippy, test and WASM checks exactly as CI does.
 
@@ -54,7 +53,7 @@ Label such PRs `gate:human`, and say in the PR body why the gate applies. Never 
 ## Workflow
 
 - **Branch:** `<type>/<issue#>-<slug>` (e.g. `feat/42-archetype-storage`). One issue → one branch → one worktree → one PR.
-- **Push:** `cargo xtask push` (retries after the pre-push hook refreshes the graph). Run `cargo xtask install-hooks` once per clone.
+- **Push:** `cargo xtask push`. Run `cargo xtask install-hooks` once per clone.
 - **Commits and PR titles:** Conventional Commits (`feat(ecs): ...`, `fix(render): ...`, `chore: ...`). PRs are squash-merged.
 - **PR body:** `Closes #N`, a summary, what changed, how it was verified, gates touched.
 - **Specs:** systems-level work needs a spec in `docs/specs/` or an ADR in `docs/decisions/`, approved before implementation. Small tasks don't.
@@ -87,4 +86,4 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.
+- graphify-out/ is local and gitignored (ADR-0004). Never commit it. The git hooks build it on checkout and refresh it before each push. If it is missing, run `graphify update .`.

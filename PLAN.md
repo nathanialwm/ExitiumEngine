@@ -101,7 +101,7 @@ The Token Optimizer runs on a schedule, e.g. after every N merged PRs or weekly.
 - `.github/ISSUE_TEMPLATE/`: feature, bug, perf, spec/RFC, agent-filed.
 - `.github/workflows/`: `ci.yml`, `human-gate.yml`, `bench.yml`, `macos.yml`, `release.yml`.
 - `docs/decisions/` (ADRs), `docs/specs/`.
-- `graphify-out/`, committed, with a union merge driver configured in `.gitattributes`.
+- `graphify-out/`, built locally by git hooks and gitignored (ADR-0004 supersedes the committed graph).
 - Labels:
   - Status: `status:needs-approval`, `status:approved`, `status:in-progress`
   - Area: `area:*`
@@ -143,7 +143,7 @@ The check fails unless the owner has applied `human-approved` when a PR touches 
    - The GitHub App `exitium-factory`, created by the owner (R3). Agents authenticate as the App, and `human-gate` verifies that `human-approved` was applied by `nathanialwm`.
 9. Write `ci.yml`: fmt, clippy `-D warnings`, tests (nextest), WASM build, cargo-deny, Miri on the `unsafe` modules, `bench-compare` (5% gate), and the platform build matrix. Add `human-gate.yml` and the `factory/ai-review` required status.
 10. Configure branch protection on `main`: PR-only, all checks required, squash merge, auto-merge enabled, Conventional Commit title check.
-11. Set up graphify: initial graph build, a `pre-push` hook plus the `xtask push` wrapper (R9), the merge driver in `.gitattributes`, and `graphify claude install` for the CLAUDE.md integration.
+11. Set up graphify: local graph build from git hooks (ADR-0004, superseding R9) and `graphify claude install` for the CLAUDE.md integration.
 12. Set up GitHub Projects (the roadmap board, with phases as milestones), labels and issue templates.
 13. Implement and verify the usage-gate mechanism (R4) and notifications (GitHub + Claude push).
 14. Dry run: take one trivial issue through the whole pipeline end to end, then fix whatever breaks.

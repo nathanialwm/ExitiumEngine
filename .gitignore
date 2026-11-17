@@ -8,7 +8,5 @@ Thumbs.db
 .env
 *.pem
 
-# graphify: only the graph and its report are shared; the rest is local cache.
-graphify-out/*
-!graphify-out/graph.json
-!graphify-out/GRAPH_REPORT.md
+# graphify: the graph is built locally by the git hooks and never committed (ADR-0004).
+graphify-out/

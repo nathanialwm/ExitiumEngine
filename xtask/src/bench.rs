@@ -20,10 +20,10 @@
 //! The rule: a benchmark is flagged when its median HEAD round is more than
 //! the threshold slower than its median base round. The median ignores bursts
 //! and lucky runs as long as they hit fewer than half the rounds of a side. A
-//! flagged benchmark is then measured again in a confirm pass of fresh rounds
-//! (baselines `confirm-<side>-<round>`), and fails the gate only if that pass
-//! flags it too. A real slowdown shows up in every round of both passes, so it
-//! still fails. `docs/benchmarks.md` has the measurements behind this.
+//! flagged benchmark is then measured again in a confirm pass of twice as many
+//! fresh rounds (baselines `confirm-<side>-<round>`), and fails the gate only
+//! if that pass flags it too. A real slowdown shows up in every round of both
+//! passes, so it still fails. `docs/benchmarks.md` has the measurements behind this.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -214,14 +214,17 @@ fn run_rounds(checkouts: &Checkouts, rounds: usize, allow_removed: bool) -> Resu
         .map(|b| b.id.as_str())
         .collect();
     if !flagged.is_empty() {
+        // Twice the rounds: only the flagged benchmarks run, so it is cheap, and
+        // a tighter median makes a second false flag much less likely.
+        let confirm_rounds = 2 * rounds;
         println!(
             "bench-ci: {} benchmark(s) over {DEFAULT_THRESHOLD_PERCENT}%; \
-             confirming in fresh rounds: {}",
+             confirming in {confirm_rounds} fresh rounds: {}",
             flagged.len(),
             flagged.join(", ")
         );
         let filter = exact_filter(&flagged);
-        measure(checkouts, Pass::Confirm, rounds, Some(&filter))?;
+        measure(checkouts, Pass::Confirm, confirm_rounds, Some(&filter))?;
     }
     let confirm = collect_rounds(&checkouts.criterion_dir, Pass::Confirm)?;
     // Both sides ran benchmarks, so an empty comparison means something broke.

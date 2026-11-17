@@ -14,7 +14,7 @@ const USAGE: &str = "usage: cargo xtask <command>
 commands:
   ci <step>                 run one CI step: fmt | clippy | test | wasm | deny | miri | all
   bench-ci <base-ref>       benchmark <base-ref> and HEAD, then run bench-compare
-  bench-compare [percent]   fail if any criterion benchmark regressed (default 5%)
+  bench-compare [percent]   re-gate the last bench-ci rounds (default 5%)
   push [git push args]      git push (the pre-push hook refreshes the local graph)
   install-hooks             point git at scripts/hooks (local graph build and refresh)";
 

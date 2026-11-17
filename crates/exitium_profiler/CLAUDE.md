@@ -1,23 +1,24 @@
 # exitium_profiler
 
-The engine's single instrumentation API: `profile_scope!` and the `profiling` feature (PR #87). Tracy and the in-editor profiler panel are later backends (PLAN § Target architecture).
+Intended to be the engine's single instrumentation API (PLAN § Target architecture: tracing, Tracy, frame stats). **On main the crate is a stub**: `src/lib.rs` is one doc line, `[dependencies]` is empty, there are no features and no benches.
+
+**Pending PR #87** (not merged: re-check main before relying on any of this) proposes `profile_scope!`, an off-by-default `profiling` feature, an optional `tracing` dependency, `benches/scope.rs` and a "Span naming convention" in `src/lib.rs`. Until it merges, none of these exist. If you touch this crate after it merges, replace this paragraph with the real state.
 
 ## Public API
-- Other crates mark work with `profile_scope!` and never name `tracing`, Tracy or the editor profiler. Backends can then change without touching instrumented code.
-- **Span names follow the "Span naming convention" in `src/lib.rs`** (`crate::system`, real crate names, literal names, no per-call data). Link to it. Do not copy it here or invent another.
+- Today: nothing. Other crates must not invent their own instrumentation macros. Wait for #87 or coordinate with it.
+- Pending #87: other crates mark work with `profile_scope!` and never name `tracing`, Tracy or the editor profiler. The span naming rules live in `src/lib.rs` once it lands. Link to them, do not copy them here.
 
 ## Invariants
-- `profiling` is off by default. Off, the macro expands to nothing and `tracing` is not compiled: shipped builds pay zero.
-- On, each scope is a `tracing` span at `INFO` with target `exitium`. Cargo unifies features, so one crate enabling it turns spans on everywhere.
+- Pending #87: `profiling` off means the macro expands to nothing and shipped builds pay zero.
 
 ## unsafe
 None.
 
 ## Dependencies
-`tracing` only, optional behind `profiling`, default features off. A new dependency (a Tracy client, for example) must be justified in the PR (license, wasm support, why not std) and added to `[workspace.dependencies]` once.
+None today. A new dependency must be justified in the PR body (ADR-0005) and declared once in `[workspace.dependencies]`.
 
 ## wasm
-Must build for `wasm32-unknown-unknown` (`cargo xtask ci wasm`). Wasm support of the `profiling` backends is not decided yet.
+Builds for `wasm32-unknown-unknown` today (`cargo xtask ci wasm`; it is not in `NATIVE_ONLY`). Pending #87: its xtask change also builds the crate with `profiling` for wasm32.
 
 ## Benchmarks
-`benches/scope.rs` measures `profile_scope!` overhead per item. Feature off, `scoped` must match `baseline` (the zero-cost claim, and what the CI gate runs). Feature on, with no subscriber, shows the cost of a disabled callsite. Conventions: `docs/benchmarks.md`.
+None today. Pending #87: `benches/scope.rs`. Conventions: `docs/benchmarks.md`.

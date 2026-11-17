@@ -17,10 +17,10 @@ Text format (human-editable, diff-friendly) and custom binary format (schema-has
 None designated. Zero-copy and aligned bulk arrays may want it: `TODO(spec #24)`. If a spec adds a designated module, it follows the root rules (`// SAFETY:` comments, Miri tests).
 
 ## Dependencies
-`exitium_core`, `exitium_reflect`. Compression crates (zstd, LZ4) are new dependencies. Each needs justification in the PR (license, wasm support, why not std) and a single entry in `[workspace.dependencies]`. Which ones: `TODO(spec #24)`.
+`exitium_core`, `exitium_reflect`. Compression crates (zstd, LZ4) are new dependencies. Justify each in the PR body (ADR-0005) and add a single entry in `[workspace.dependencies]`. Which ones: `TODO(spec #24)`.
 
 ## wasm
-`TODO(spec #24)`: wasm status, including compression crate support.
+The crate is not in `NATIVE_ONLY` (`xtask/src/ci.rs`), so it must build for `wasm32-unknown-unknown` today. `TODO(spec #24)`: wasm status of the format and compression crates.
 
 ## Benchmarks
 Serializing a large world (the reflect spec budgets for 1M entities) is the hot path. Benchmarks, sizes and budgets: `TODO(spec #23/#24)`. Follow `docs/benchmarks.md`: `exitium_serial/<area>/<case>`, 1k, 100k and 1M sizes.

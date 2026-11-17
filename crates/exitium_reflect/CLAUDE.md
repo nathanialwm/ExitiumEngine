@@ -3,7 +3,7 @@
 Runtime type info. One `#[derive(Reflect)]` feeds the inspector, serialization, Luau and MCP schemas (design rule 2). Spec: `docs/specs/reflect-model.md`. Read it before editing. The crate is still a stub (slices #31 to #37, #50).
 
 ## Public API
-- Metadata is read-only. Mutation primitives (`apply`, `path_mut`, `clone_boxed`) are reached only through command-bus commands (design rule 3).
+- Metadata is read-only. Reflection supplies the primitives (`apply`, `path_mut`, `clone_boxed`) and serializers call them directly. Editor, MCP and Lua mutations built on them go through command-bus commands (design rule 3).
 - Reflection stays JSON-free. `TypeInfo` to JSON Schema lives in `exitium_mcp`.
 - Re-exported as `exitium::reflect` by the facade (a high-risk surface).
 - Not reflectable in v1: sets, `usize`/`isize`, borrowed fields, trait objects. `Handle<T>` has no impl (only `RawHandle`).
@@ -11,7 +11,7 @@ Runtime type info. One `#[derive(Reflect)]` feeds the inspector, serialization, 
 ## Invariants
 - Reflected types are `Send + Sync`. `TypeInfo` is immutable `'static` data. Registration is idempotent and order-independent.
 - The schema hash and the per-type `version` are part of the persisted format. Changing what is hashed is a format change. The spec defines what the hash covers.
-- Core types (`Num`, `Guid`, `RawHandle`, glam) get their `Reflect` impls here (orphan rule). `Num` has a private invariant, so it is a Value kind, not a transparent wrapper (#78). `Entity` is hand-written in `exitium_ecs`.
+- Core types (`Num`, `Guid`, `RawHandle`, glam) get their `Reflect` impls here (orphan rule). Per the merged spec, `Num` and `Guid` are `transparent` (Value covers only primitives and `String`), `Entity` is a derived struct `{ index, generation }` in `exitium_ecs`, and pinned engine names are unqualified. **Pending #78 (open) proposes changing this**: `Num` becomes a Value kind and `Entity` is hand-written. Follow the spec until #78 merges.
 - `Component` and `Resource` belong to `exitium_ecs`. The derive never implements them.
 - Migration decoding of old binary files is decided in `TODO(spec #24)`.
 

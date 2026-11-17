@@ -4,7 +4,7 @@ Job system: one worker pool, `scope`/`spawn`, `parallel_for`, `par_chunks[_mut]`
 
 ## Public API
 - Safe API only. The same signatures on every target, `Send`/`Sync` bounds included.
-- A job must not block on anything except another scope or job (the job rule in the spec).
+- The job rule (spec, deadlock freedom): a job must not block on anything that needs another job to run. That means channels, barriers, a condvar waiting on a sibling job, a lock held across a `scope` call its jobs also take, or a thread-local `RefCell` borrow (or other non-reentrant guard) held across `scope`/`parallel_for`. Calling `scope`/`parallel_for` from a job is fine.
 - Not a system scheduler. Ordering, access-conflict batching and the tick loop belong to the ECS scheduler spec (`TODO(spec #22)`) and `exitium_app`.
 
 ## Invariants
@@ -20,7 +20,7 @@ Only `src/scope.rs` is designated (`#[allow(unsafe_code)]`). It holds the lifeti
 None external, and no `rayon`. A switch needs a PR with the measured trigger from the spec. Optional workspace-internal features `reflect` and `profiling` are off by default.
 
 ## wasm
-Builds on `wasm32-unknown-unknown` and runs inline (`threads == 1`). Only `platform.rs` may use `cfg(target_arch = "wasm32")`. `clippy.toml` bans `Instant::now`, `thread::spawn` and `available_parallelism` elsewhere. Tests run under `ThreadBudget::single()` as the wasm proxy.
+Builds on `wasm32-unknown-unknown` and runs inline (`threads == 1`). Only `platform.rs` may use `cfg(target_arch = "wasm32")`. Planned (#26): `clippy.toml` bans `Instant::now`, `thread::spawn` and `available_parallelism` elsewhere. It does not exist yet. Tests run under `ThreadBudget::single()` as the wasm proxy.
 
 ## Benchmarks
 `benches/pool.rs` (#30), thread count from `EXITIUM_THREADS` (`docs/benchmarks.md`). Required cases are the spec's Performance table. The scaling ratios against a serial loop are binding. Absolute times are provisional ceilings.

@@ -1,0 +1,52 @@
+---
+name: factory-run
+description: Run one pass of the Exitium AI software factory loop - approve and triage issues, start up to 3 implementers in worktrees, drive PRs through test, review and auto-merge. Use when the owner says "run the factory", "/factory-run", or asks to work the backlog.
+---
+
+# Factory run
+
+You are the orchestrator. You coordinate subagents; you do not implement. All `gh` API calls go through the App token (CLAUDE.md "GitHub identity"):
+
+```bash
+T() { GH_TOKEN="$(scripts/factory/gh-app-token.sh)" gh "$@"; }
+```
+
+## 1. Gates before starting new work
+
+- **Usage gate:** if less than 5% of session usage remains, or you cannot tell (the automated check is pending, INTERVIEW.md R4), do not start new issues. Skip to step 5 and only advance work already in flight. If you cannot tell, ask the owner once.
+- **Concurrency:** count the in-progress issues with `T issue list --label status:in-progress --json number --jq length`. The number of new slots is `3 - count`.
+
+## 2. Intake
+
+- Issues labelled `status:needs-approval`: spawn `issue-approver` once, with the list.
+- `status:approved` issues without a `role:*` label: spawn `triage` once, with the list.
+
+## 3. Pick work
+
+A ready issue is one that:
+- is `status:approved`, with a `role:*` label;
+- has no open "Blocked by #N" dependencies;
+- is not labelled `needs-spec`, or its spec is approved.
+
+Order ready issues by roadmap Project priority, then milestone, then age. Take as many as there are free slots.
+
+## 4. Start implementers
+
+For each picked issue:
+1. Relabel it from `status:approved` to `status:in-progress`.
+2. Spawn the agent named in its `role:*` label, with `isolation: "worktree"`. The prompt: `Implement issue #N. Follow the implement-issue skill.`
+
+Spawn all of them in one message so they run in parallel. Each one returns a PR URL, head SHA and gate status.
+
+## 5. Drive each open factory PR
+
+1. **Tests:** spawn `test-writer` on the PR branch, unless the implementer already added sufficient tests.
+2. **Review:** spawn `reviewer` and `test-reviewer` in parallel. Spawn `perf` too if hot paths or benchmarks changed.
+3. **Changes requested:** send the findings to the implementer (SendMessage to the same agent, or spawn the same role on the branch). After **2 failed review rounds**, stop: add `gate:human`, comment a summary, and notify the owner.
+4. **Approved:** the reviewer has already posted the `factory/ai-review` success status. Enable auto-merge with `T pr merge <N> --auto --squash`. GitHub merges once CI and `human-gate` pass.
+5. **Merged:** spawn `docs-graph` for merges that changed structure or behavior.
+
+## 6. Report and notify
+
+- Send a push notification to the owner when a PR needs `human-approved`, CI on `main` is broken, an agent is stuck, or the backlog is empty.
+- End with a short table of issue, PR, state and next action.

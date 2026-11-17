@@ -98,8 +98,15 @@ pub fn bench_ci(args: &[String]) -> Result<(), String> {
             base_ref,
         ],
     )?;
+    let checkouts = Checkouts {
+        base: worktree.clone(),
+        head: PathBuf::from("."),
+        base_target: target_dir.join("bench-base-target"),
+        head_target: target_dir,
+        criterion_dir,
+    };
     // The base worktree must outlive every round, so remove it only at the end.
-    let result = run_rounds(&worktree, &target_dir, rounds, allow_removed);
+    let result = run_rounds(&checkouts, rounds, allow_removed);
     remove_worktree(&worktree);
     result
 }
@@ -111,16 +118,36 @@ fn remove_worktree(worktree: &Path) {
         .status();
 }
 
-fn run_rounds(
-    worktree: &Path,
-    target_dir: &Path,
-    rounds: usize,
-    allow_removed: bool,
-) -> Result<(), String> {
-    let head = Path::new(".");
-    let base_has_benches = has_bench_targets(worktree)?;
-    let head_has_benches = has_bench_targets(head)?;
-    let dir = |side| if side == Side::Base { worktree } else { head };
+/// Where each side builds and runs. Each side has its own cargo target dir: the
+/// two checkouts build to the same artifact paths, so in one shared dir each
+/// side's build would overwrite the other's benchmark binaries. Both write to
+/// one criterion dir, so the gate finds every round in one place.
+struct Checkouts {
+    base: PathBuf,
+    head: PathBuf,
+    base_target: PathBuf,
+    head_target: PathBuf,
+    criterion_dir: PathBuf,
+}
+
+impl Checkouts {
+    fn bench(
+        &self,
+        side: Side,
+        cargo_args: &[&str],
+        criterion_args: &[String],
+    ) -> Result<(), String> {
+        let (dir, target) = match side {
+            Side::Base => (&self.base, &self.base_target),
+            Side::Head => (&self.head, &self.head_target),
+        };
+        cargo_bench(dir, target, &self.criterion_dir, cargo_args, criterion_args)
+    }
+}
+
+fn run_rounds(checkouts: &Checkouts, rounds: usize, allow_removed: bool) -> Result<(), String> {
+    let base_has_benches = has_bench_targets(&checkouts.base)?;
+    let head_has_benches = has_bench_targets(&checkouts.head)?;
 
     match (base_has_benches, head_has_benches) {
         (false, false) => {
@@ -134,7 +161,7 @@ fn run_rounds(
         (false, true) => {
             // Nothing to compare against; one run checks the new benchmarks work.
             println!("bench-ci: the base has no bench targets; running HEAD once");
-            return cargo_bench(head, target_dir, &[], &round_args(Side::Head, 1));
+            return checkouts.bench(Side::Head, &[], &round_args(Side::Head, 1));
         }
         (true, true) => {}
     }
@@ -142,7 +169,7 @@ fn run_rounds(
     // Build both sides before timing anything, so no round shares the CPU
     // with a compile.
     for side in [Side::Base, Side::Head] {
-        cargo_bench(dir(side), target_dir, &["--no-run"], &[])?;
+        checkouts.bench(side, &["--no-run"], &[])?;
     }
     for round in 1..=rounds {
         let order = if round % 2 == 1 {
@@ -152,10 +179,10 @@ fn run_rounds(
         };
         for side in order {
             println!("bench-ci: round {round}/{rounds}, {}", side.name());
-            cargo_bench(dir(side), target_dir, &[], &round_args(side, round))?;
+            checkouts.bench(side, &[], &round_args(side, round))?;
         }
     }
-    let benches = collect_rounds(&target_dir.join("criterion"))?;
+    let benches = collect_rounds(&checkouts.criterion_dir)?;
     if !allow_removed {
         let missing: Vec<&str> = benches
             .iter()
@@ -365,6 +392,7 @@ fn has_bench_targets(dir: &Path) -> Result<bool, String> {
 fn cargo_bench(
     dir: &Path,
     target_dir: &Path,
+    criterion_dir: &Path,
     cargo_args: &[&str],
     criterion_args: &[String],
 ) -> Result<(), String> {
@@ -379,6 +407,7 @@ fn cargo_bench(
         .args(&args)
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", target_dir)
+        .env("CRITERION_HOME", criterion_dir)
         .status()
         .map_err(|e| format!("failed to start cargo: {e}"))?;
     if status.success() {

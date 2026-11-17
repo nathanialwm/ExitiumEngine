@@ -195,6 +195,13 @@ mod tests {
         rects
     }
 
+    /// Bitwise equality, so that rects with NaN coordinates compare equal
+    /// to themselves.
+    fn same(a: Rect, b: Rect) -> bool {
+        let bits = |rect: Rect| [rect.min.x, rect.min.y, rect.max.x, rect.max.y].map(f32::to_bits);
+        bits(a) == bits(b)
+    }
+
     #[test]
     fn constructors() {
         let inverted = Rect::new(v(5.0, 8.0), v(1.0, 2.0));
@@ -216,6 +223,28 @@ mod tests {
     }
 
     #[test]
+    fn from_corners_with_a_nan_corner_is_empty() {
+        let nan = f32::NAN;
+        let corner_pairs = [
+            (v(nan, 0.0), v(1.0, 1.0)),
+            (v(0.0, 0.0), v(nan, 1.0)),
+            (v(0.0, nan), v(1.0, 1.0)),
+            (v(0.0, 0.0), v(1.0, nan)),
+        ];
+        for (a, b) in corner_pairs {
+            assert!(Rect::from_corners(a, b).is_empty(), "{a} {b}");
+        }
+    }
+
+    #[test]
+    fn from_min_size_loses_a_size_below_f32_precision() {
+        // At 1e8 the gap between f32 values is 8, so `1e8 + 1` is `1e8`.
+        let rect = Rect::from_min_size(v(1e8, 0.0), v(1.0, 1.0));
+        assert_eq!(rect.max.x, rect.min.x);
+        assert!(rect.is_empty());
+    }
+
+    #[test]
     fn measurements() {
         let rect = r(1.0, 2.0, 5.0, 8.0);
         assert_eq!(rect.width(), 4.0);
@@ -228,7 +257,13 @@ mod tests {
     #[test]
     fn contains_is_half_open() {
         let rect = r(0.0, 0.0, 4.0, 2.0);
-        let inside = [v(0.0, 0.0), v(2.0, 0.0), v(0.0, 1.0), v(3.999, 1.999)];
+        let inside = [
+            v(0.0, 0.0),
+            v(2.0, 0.0),
+            v(0.0, 1.0),
+            v(3.999, 1.999),
+            v(-0.0, -0.0),
+        ];
         let outside = [
             v(4.0, 0.0),
             v(0.0, 2.0),
@@ -259,6 +294,11 @@ mod tests {
             r(-1.0, 1.0, 1.0, -1.0),
             r(f32::NAN, 0.0, 1.0, 1.0),
             r(0.0, 0.0, 1.0, f32::NAN),
+            r(0.0, f32::NAN, 1.0, 1.0),
+            r(0.0, 0.0, f32::NAN, 1.0),
+            // Far outside `big`, so merging them would grow the union.
+            r(100.0, 100.0, 100.0, 100.0),
+            r(50.0, 50.0, -50.0, -50.0),
             Rect::from_min_size(v(0.0, 0.0), v(-1.0, 1.0)),
             Rect::from_center_size(v(0.0, 0.0), v(1.0, -1.0)),
         ];
@@ -272,8 +312,27 @@ mod tests {
             assert!(!empty.intersects(empty), "{empty:?}");
             assert_eq!(empty.union(big), big, "{empty:?}");
             assert_eq!(big.union(empty), big, "{empty:?}");
-            assert!(empty.union(Rect::default()).is_empty(), "{empty:?}");
+            for other in empties {
+                let union = empty.union(other);
+                assert!(
+                    same(union, empty) || same(union, other),
+                    "{empty:?} {other:?}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn infinite_bounds() {
+        let inf = f32::INFINITY;
+        let everything = r(-inf, -inf, inf, inf);
+        assert!(!everything.is_empty());
+        assert!(everything.contains(v(0.0, 0.0)));
+        assert!(everything.contains(v(-inf, -inf)));
+        assert!(!everything.contains(v(inf, 0.0)), "the max edge is outside");
+        assert!(!everything.contains(v(f32::NAN, 0.0)));
+        assert!(everything.intersects(r(0.0, 0.0, 1.0, 1.0)));
+        assert_eq!(everything.union(r(0.0, 0.0, 1.0, 1.0)), everything);
     }
 
     #[test]
@@ -322,15 +381,36 @@ mod tests {
         for &a in &rects {
             let a_has_point = points.iter().any(|&p| a.contains(p));
             assert_eq!(a.is_empty(), !a_has_point, "{a:?}");
+            if a_has_point {
+                assert_eq!(a.union(a), a, "{a:?}");
+            }
             for &b in &rects {
                 let shared = points.iter().any(|&p| a.contains(p) && b.contains(p));
                 assert_eq!(a.intersects(b), shared, "{a:?} {b:?}");
                 let union = a.union(b);
-                for &p in &points {
-                    if a.contains(p) || b.contains(p) {
-                        assert!(union.contains(p), "{a:?} {b:?} {p}");
-                    }
+                let covered: Vec<Vec2> = points
+                    .iter()
+                    .copied()
+                    .filter(|&p| a.contains(p) || b.contains(p))
+                    .collect();
+                if covered.is_empty() {
+                    assert!(union.is_empty(), "{a:?} {b:?}");
+                    continue;
                 }
+                // The bounding box of the covered points. Corners are whole
+                // numbers and points step by 0.5, so each max edge is half a
+                // step past the last covered point.
+                let fold = |init: f32, pick: fn(f32, f32) -> f32, axis: fn(Vec2) -> f32| {
+                    covered.iter().map(|&p| axis(p)).fold(init, pick)
+                };
+                let bounds = r(
+                    fold(f32::INFINITY, f32::min, |p| p.x),
+                    fold(f32::INFINITY, f32::min, |p| p.y),
+                    fold(f32::NEG_INFINITY, f32::max, |p| p.x) + 0.5,
+                    fold(f32::NEG_INFINITY, f32::max, |p| p.y) + 0.5,
+                );
+                assert_eq!(union, bounds, "{a:?} {b:?}");
+                assert_eq!(b.union(a), union, "{a:?} {b:?}, swapped");
             }
         }
     }

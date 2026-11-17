@@ -230,19 +230,20 @@ mod tests {
     fn decoding_matches_reference_values() {
         // Reference values from the IEC 61966-2-1 formulas in f64. Byte 10
         // is on the linear segment, byte 11 the first on the curve.
+        // The third value is the alpha, which is only scaled.
         let cases = [
-            (0, 0.0),
-            (10, 0.003_035_27),
-            (11, 0.003_346_536),
-            (128, 0.215_860_5),
-            (188, 0.502_886_5),
-            (255, 1.0),
+            (0, 0.0, 0.0),
+            (10, 0.003_035_27, 0.039_215_69),
+            (11, 0.003_346_536, 0.043_137_256),
+            (128, 0.215_860_5, 0.501_960_8),
+            (188, 0.502_886_5, 0.737_254_9),
+            (255, 1.0, 1.0),
         ];
-        for (byte, linear) in cases {
+        for (byte, linear, alpha) in cases {
             let color = Color::from_srgba_u8(byte, byte, byte, byte);
             assert!((color.r - linear).abs() < 1e-6, "{byte}: {}", color.r);
             assert_eq!((color.g, color.b), (color.r, color.r), "{byte}");
-            assert_eq!(color.a, f32::from(byte) / 255.0, "{byte}: alpha is linear");
+            assert!((color.a - alpha).abs() < 1e-6, "{byte}: alpha {}", color.a);
         }
     }
 
@@ -300,6 +301,41 @@ mod tests {
     }
 
     #[test]
+    fn from_hex_round_trips_every_byte() {
+        // The channels differ, and most bytes have unequal nibbles, so a
+        // swapped digit or channel changes the result.
+        for v in 0..=u8::MAX {
+            let bytes = [v, v.wrapping_add(85), v.wrapping_add(170), u8::MAX - v];
+            let [r, g, b, a] = bytes;
+            let long = format!("#{r:02x}{g:02x}{b:02x}{a:02x}");
+            assert_eq!(
+                Color::from_hex(&long).unwrap().to_srgba_u8(),
+                bytes,
+                "{long}"
+            );
+            let opaque = format!("{r:02X}{g:02X}{b:02X}");
+            assert_eq!(
+                Color::from_hex(&opaque).unwrap().to_srgba_u8(),
+                [r, g, b, u8::MAX],
+                "{opaque}"
+            );
+        }
+        assert_eq!(
+            Color::from_hex("#a5c3e1f0"),
+            Ok(Color::from_srgba_u8(0xa5, 0xc3, 0xe1, 0xf0))
+        );
+    }
+
+    #[test]
+    fn from_hex_alpha_is_straight() {
+        let clear = Color::from_hex("#ff880000").unwrap();
+        let opaque = Color::from_hex("#ff8800").unwrap();
+        assert_eq!(clear.to_srgba_u8(), [0xff, 0x88, 0x00, 0x00]);
+        assert_eq!((clear.r, clear.g, clear.b), (opaque.r, opaque.g, opaque.b));
+        assert_eq!(clear.r, 1.0);
+    }
+
+    #[test]
     fn from_hex_reads_every_digit() {
         for (value, digit) in "0123456789abcdef".chars().enumerate() {
             let byte = u8::try_from(value * 0x11).unwrap();
@@ -307,6 +343,10 @@ mod tests {
             for case in [digit, digit.to_ascii_uppercase()] {
                 for text in [case.to_string().repeat(4), case.to_string().repeat(8)] {
                     assert_eq!(Color::from_hex(&text), expected, "{text}");
+                }
+                let opaque = Ok(Color::from_srgba_u8(byte, byte, byte, u8::MAX));
+                for text in [case.to_string().repeat(3), case.to_string().repeat(6)] {
+                    assert_eq!(Color::from_hex(&text), opaque, "{text}");
                 }
             }
         }
@@ -326,6 +366,8 @@ mod tests {
             (" #fff", InvalidLength { len: 5 }),
             // Characters are counted, not bytes: `é` is two bytes.
             ("#ffffé", InvalidLength { len: 5 }),
+            // The length is checked before the characters.
+            ("#zzzzz", InvalidLength { len: 5 }),
             (
                 "#fff ",
                 InvalidChar {
@@ -361,6 +403,34 @@ mod tests {
                     found: 'é',
                 },
             ),
+            (
+                "#ＦＦＦ",
+                InvalidChar {
+                    index: 1,
+                    found: 'Ｆ',
+                },
+            ),
+            (
+                "#😀ff",
+                InvalidChar {
+                    index: 1,
+                    found: '😀',
+                },
+            ),
+            (
+                "#ff88000g",
+                InvalidChar {
+                    index: 8,
+                    found: 'g',
+                },
+            ),
+            (
+                "ff#fff",
+                InvalidChar {
+                    index: 2,
+                    found: '#',
+                },
+            ),
         ];
         for (text, error) in cases {
             assert_eq!(Color::from_hex(text), Err(error), "{text:?}");
@@ -380,6 +450,14 @@ mod tests {
             }
             .to_string(),
             "invalid hex color: expected a hex digit at index 4, found 'g'"
+        );
+        assert_eq!(
+            ParseColorError::InvalidChar {
+                index: 1,
+                found: '\n'
+            }
+            .to_string(),
+            "invalid hex color: expected a hex digit at index 1, found '\\n'"
         );
     }
 }

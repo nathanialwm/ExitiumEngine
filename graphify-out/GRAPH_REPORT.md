@@ -1,17 +1,17 @@
 # Graph Report - exitium  (2026-11-16)
 
 ## Corpus Check
-- 110 files · ~15,729 words
+- 110 files · ~16,442 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 8 file(s) not represented in the graph (top: .toml 4, (none) 4)
 
 ## Summary
-- 395 nodes · 349 edges · 107 communities (21 shown, 86 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 3 edges (avg confidence: 0.85)
+- 403 nodes · 364 edges · 108 communities (23 shown, 85 thin omitted)
+- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 6 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `4eaa12aa`
+- Built from commit: `ace8188b`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -76,27 +76,28 @@
 - pull_request_template.md
 - merge-pr.sh
 - entrypoint.sh
+- volumes
 
 ## God Nodes (most connected - your core abstractions)
 1. `Step-by-step plan` - 11 edges
 2. `Exitium Engine — Agent Guide` - 10 edges
 3. `jobs` - 9 edges
-4. `run` - 8 edges
-5. `Spec: <feature>` - 8 edges
-6. `uses` - 7 edges
-7. `volumes` - 7 edges
+4. `volumes` - 9 edges
+5. `run` - 8 edges
+6. `Spec: <feature>` - 8 edges
+7. `uses` - 7 edges
 8. `bench_ci()` - 7 edges
-9. `step()` - 7 edges
-10. `main()` - 7 edges
+9. `gate()` - 7 edges
+10. `step()` - 7 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `main()` --calls--> `bench_ci()`  [EXTRACTED]
   xtask/src/main.rs → xtask/src/bench.rs
 - `main()` --calls--> `compare()`  [EXTRACTED]
   xtask/src/main.rs → xtask/src/bench.rs
-- `main()` --calls--> `push()`  [EXTRACTED]
-  xtask/src/main.rs → xtask/src/git.rs
 - `main()` --calls--> `install_hooks()`  [EXTRACTED]
+  xtask/src/main.rs → xtask/src/git.rs
+- `main()` --calls--> `push()`  [EXTRACTED]
   xtask/src/main.rs → xtask/src/git.rs
 - `main()` --calls--> `step()`  [EXTRACTED]
   xtask/src/main.rs → xtask/src/ci.rs
@@ -104,11 +105,11 @@
 ## Import Cycles
 - None detected.
 
-## Communities (107 total, 86 thin omitted)
+## Communities (108 total, 85 thin omitted)
 
 ### Community 0 - "bench.rs"
-Cohesion: 0.20
-Nodes (15): bench_ci(), cargo_bench(), Change, collect_changes(), compare(), DEFAULT_THRESHOLD_PERCENT, has_bench_targets(), number_after() (+7 more)
+Cohesion: 0.16
+Nodes (21): bench_ci(), cargo_bench(), Change, change(), collect_changes(), compare(), DEFAULT_THRESHOLD_PERCENT, gate() (+13 more)
 
 ### Community 1 - "ci.rs"
 Cohesion: 0.13
@@ -127,8 +128,8 @@ Cohesion: 0.09
 Nodes (21): AI software factory design, Cross-cutting rules, Exitium Engine — Plan, Flow, Human gates, enforced by the `human-gate` CI check, Immediate next steps, Overview, Phase 0 — Repository and factory bootstrap (manual, with owner) (+13 more)
 
 ### Community 5 - "volumes"
-Cohesion: 0.08
-Nodes (29): REPO_URL, RUNNER_LABELS, RUNNER_NAME, RUNNER_TOKEN, build, environment, image, restart (+21 more)
+Cohesion: 0.11
+Nodes (22): REPO_URL, RUNNER_LABELS, RUNNER_NAME, RUNNER_TOKEN, build, environment, image, restart (+14 more)
 
 ### Community 6 - "Exitium Engine — Agent Guide"
 Cohesion: 0.18
@@ -164,7 +165,7 @@ Nodes (18): concurrency, cancel-in-progress, group, env, GH_TOKEN, HEAD_SHA, OWN
 
 ### Community 95 - "ci.yml"
 Cohesion: 0.13
-Nodes (15): concurrency, concurrency, cancel-in-progress, group, env, CARGO_INCREMENTAL, CARGO_TERM_COLOR, name (+7 more)
+Nodes (14): concurrency, cancel-in-progress, group, env, CARGO_INCREMENTAL, CARGO_TERM_COLOR, name, on (+6 more)
 
 ### Community 96 - "bug.yml"
 Cohesion: 0.14
@@ -190,10 +191,18 @@ Nodes (4): CI runners, Linux runners, Toolchain bumps, Windows runner
 Cohesion: 0.40
 Nodes (4): Changes, Gates, Summary, Verification
 
+### Community 103 - "merge-pr.sh"
+Cohesion: 0.67
+Nodes (3): check_status(), GH_TOKEN, merge-pr.sh script
+
+### Community 107 - "volumes"
+Cohesion: 0.22
+Nodes (9): volumes, linux-1-cargo, linux-1-state, linux-1-target, linux-1-work, linux-2-cargo, linux-2-state, linux-2-target (+1 more)
+
 ## Knowledge Gaps
 - **31 isolated node(s):** `GH_TOKEN`, `exitium`, `exitium_app`, `exitium_assets`, `exitium_audio` (+26 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 268 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **86 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 271 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **85 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
@@ -204,11 +213,11 @@ _Questions this graph is uniquely positioned to answer:_
   _31 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `ci.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.12648221343873517 - nodes in this community are weakly interconnected._
-- **Why does `bench` connect `jobs` to `ci.yml`?**
+- **Why does `main()` connect `ci.rs` to `bench.rs`?**
   _High betweenness centrality (0.003) - this node is a cross-community bridge._
 - **Should `jobs` be split into smaller, more focused modules?**
   _Cohesion score 0.07254623044096728 - nodes in this community are weakly interconnected._
 - **Should `Step-by-step plan` be split into smaller, more focused modules?**
   _Cohesion score 0.09090909090909091 - nodes in this community are weakly interconnected._
 - **Should `volumes` be split into smaller, more focused modules?**
-  _Cohesion score 0.08275862068965517 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.11462450592885376 - nodes in this community are weakly interconnected._

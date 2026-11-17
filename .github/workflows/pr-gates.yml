@@ -1,7 +1,8 @@
 # PR gates, posted as commit statuses on the PR head:
 #   pr-title    the title is a Conventional Commit (it becomes the squash commit).
-#   human-gate  PRs touching a human-gate area (CLAUDE.md "Human gates") need the
-#               owner's approval *of the head commit*: the `human-approved` status
+#   human-gate  PRs escalated with `needs-human` after two failed AI review rounds
+#               (CLAUDE.md "Human escalation", ADR-0005) need the owner's approval
+#               *of the head commit*: the `human-approved` status
 #               that pr-approval.yml posts when the owner applies the label. A push
 #               creates a new head with no approval, so it revokes approval by
 #               construction. While waiting the status is `pending`, not `failure`.
@@ -71,39 +72,13 @@ jobs:
             labels=$(grep -vx human-approved <<< "$labels" || true)
           fi
 
+          # The only gate is review escalation: the orchestrator labels a PR
+          # needs-human after two failed AI review rounds. The label is sticky:
+          # once applied, removing it does not lift the gate.
           reasons=()
-          pr_files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" | jq -s add)
-          # Renames count on both sides, so moving a file out of a gated path is caught.
-          names=$(jq -r '.[] | .filename, (.previous_filename // empty)' <<< "$pr_files")
-          gate_paths='(^|/)(CLAUDE|AGENTS)\.md$|^(\.github/|\.claude/|\.cargo/|\.config/|xtask/|scripts/|ci/|deny\.toml$|rustfmt\.toml$|clippy\.toml$|\.gitattributes$|LICENSE|docs/decisions/0002-|Cargo\.toml$|rust-toolchain\.toml$|crates/exitium/src/|crates/exitium_serial/|crates/exitium_save/|crates/exitium_steam/)'
-          if hits=$(grep -E "$gate_paths" <<< "$names"); then
-            reasons+=("gated paths: $(head -5 <<< "$hits" | paste -sd ' ')")
-          fi
-
-          # New external dependencies appear as added `source = ` lines in Cargo.lock.
-          lock_patch=$(jq -r '.[] | select(.filename == "Cargo.lock") | .patch // "TRUNCATED"' <<< "$pr_files")
-          if grep -qE '^\+source = |^TRUNCATED$' <<< "$lock_patch"; then
-            reasons+=("new dependencies in Cargo.lock")
-          fi
-
-          added=$(jq -r '.[].patch // ""' <<< "$pr_files" | grep -E '^\+' || true)
-          if grep -qiE 'secrets\.|private[-_]key|credentials\.json|api[-_]?key' <<< "$added"; then
-            reasons+=("references secrets")
-          fi
-          # GitHub omits the patch for oversized diffs; such code/config files can't be
-          # scanned, so they gate. (Binary assets also lack a patch and are exempt.)
-          if jq -e 'any(.[]; .patch == null and .changes > 0 and (.filename | test("[.](rs|toml|ya?ml|sh|ps1|py|lock)$")))' <<< "$pr_files" > /dev/null; then
-            reasons+=("diff too large to scan")
-          fi
-          rust_added=$(jq -r '.[] | select(.filename | endswith(".rs")) | .patch // ""' <<< "$pr_files" | grep -E '^\+' || true)
-          if grep -qE '\bunsafe\b|allow\(unsafe_code\)' <<< "$rust_added"; then
-            reasons+=("adds unsafe code")
-          fi
-
-          # A gate:human label is sticky: once applied, removing it does not lift the gate.
           timeline=$(gh api --paginate "repos/$REPO/issues/$PR/timeline" | jq -s add)
-          if jq -e 'any(.[]; .event == "labeled" and .label.name == "gate:human")' <<< "$timeline" > /dev/null; then
-            reasons+=("labelled gate:human")
+          if jq -e 'any(.[]; .event == "labeled" and .label.name == "needs-human")' <<< "$timeline" > /dev/null; then
+            reasons+=("escalated with needs-human after two failed AI review rounds")
           fi
 
           if [ ${#reasons[@]} -eq 0 ]; then
@@ -111,7 +86,7 @@ jobs:
             exit 0
           fi
           printf 'gate applies: %s\n' "${reasons[@]}"
-          grep -qx gate:human <<< "$labels" || gh api "repos/$REPO/issues/$PR/labels" -f "labels[]=gate:human" > /dev/null
+          grep -qx needs-human <<< "$labels" || gh api "repos/$REPO/issues/$PR/labels" -f "labels[]=needs-human" > /dev/null
 
           # This event may itself be the approval; pr-approval.yml records it durably.
           approvals=$(gh api "repos/$REPO/commits/$HEAD_SHA/statuses?per_page=100" --jq '[.[] | select(.context == "human-approved" and .creator.login == "github-actions[bot]" and .state == "success")] | length')

@@ -11,8 +11,8 @@
 # the owner can push such changes.
 #
 # Usage: scripts/factory/merge-pr.sh <pr-number>
-# Exit codes: 0 merged, 1 a check failed, 2 checks still pending (or waiting for
-# the owner's human-approved label).
+# Exit codes: 0 merged, 1 a check failed, 2 checks still pending (or a
+# needs-human PR waiting for the owner's human-approved label).
 set -euo pipefail
 
 pr="${1:?usage: merge-pr.sh <pr-number>}"
@@ -59,6 +59,13 @@ case "$conclusion" in
   pending | missing) echo "pending  ci-pass"; pending=1 ;;
   *) echo "FAILED   ci-pass ($conclusion)"; failed=1 ;;
 esac
+
+# Belt and braces for escalated PRs: don't trust a stale human-gate success if
+# the gate job lagged; require the owner's approval status on this head directly.
+labels=$(gh pr view "$pr" --repo "$repo" --json labels --jq '.labels[].name')
+if grep -qx needs-human <<< "$labels"; then
+  check_status human-approved "$actions_bot"
+fi
 
 [ "$failed" = 0 ] || exit 1
 [ "$pending" = 0 ] || exit 2

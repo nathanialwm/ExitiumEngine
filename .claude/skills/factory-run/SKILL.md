@@ -42,11 +42,11 @@ Spawn all of them in one message so they run in parallel. Each one returns a PR 
 
 1. **Tests:** spawn `test-writer` on the PR branch, unless the implementer already added sufficient tests.
 2. **Review:** spawn `reviewer` and `test-reviewer` in parallel. Spawn `perf` too if hot paths or benchmarks changed.
-3. **Changes requested:** send the findings to the implementer (SendMessage to the same agent, or spawn the same role on the branch). After **2 failed review rounds**, stop: add `gate:human`, comment a summary, and notify the owner.
+3. **Changes requested:** send the findings to the implementer (SendMessage to the same agent, or spawn the same role on the branch). After **2 failed review rounds**, stop: add `needs-human`, comment a summary that @-mentions `@nathanialwm` with the options (another fix round, owner edits, merge and file follow-ups), and notify the owner. The label is sticky, so even after a clean extra round the owner must approve the final head. This is the only point where the factory waits on the owner.
 4. **Approved:** the reviewer has already posted the `factory/ai-review` success status. Run `scripts/factory/merge-pr.sh <N>`. It merges only when `ci-pass`, `pr-title`, `human-gate` and `factory/ai-review` all pass on the head commit. Exit 2 means checks are still running: move on and retry on the next pass. Exit 1 means a check failed: treat it like changes requested. Never merge any other way; without GitHub Pro there is no branch protection, so this script is the gate.
 5. **Merged:** spawn `docs-graph` for merges that changed structure or behavior.
 
 ## 6. Report and notify
 
-- Send a push notification (the `PushNotification` tool) to the owner when a PR needs `human-approved`, CI on `main` is broken, an agent is stuck, or the backlog is empty. GitHub notifications are covered separately: the `human-gate` check @-mentions the owner on gated PRs, and any comment asking the owner for something must @-mention `@nathanialwm`.
+- Send a push notification (the `PushNotification` tool) to the owner when a PR is escalated with `needs-human`, CI on `main` is broken, an agent is stuck, or the backlog is empty. GitHub notifications are covered separately: the `human-gate` check @-mentions the owner on `needs-human` PRs, and any comment asking the owner for something must @-mention `@nathanialwm`.
 - End with a short table of issue, PR, state and next action.

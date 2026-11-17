@@ -4,9 +4,3 @@
 *.ogg binary
 *.wav binary
 *.exb binary
-
-# graphify: union-merge graph.json between parallel branches (INTERVIEW.md R9).
-# The report is regenerated on the next push, so keep our side on conflict.
-# Both drivers are registered by `cargo xtask install-hooks`.
-graphify-out/graph.json merge=graphify
-graphify-out/GRAPH_REPORT.md merge=ours

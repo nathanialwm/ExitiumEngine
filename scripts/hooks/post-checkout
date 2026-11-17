@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Builds the local graphify knowledge graph when a checkout has none, such as a
+# fresh clone or a new worktree. graphify-out/ is gitignored (ADR-0004).
+# Never fails the checkout. Installed by `cargo xtask install-hooks`.
+set -uo pipefail
+
+command -v graphify >/dev/null 2>&1 || exit 0
+cd "$(git rev-parse --show-toplevel)" || exit 0
+[ -f graphify-out/graph.json ] && exit 0
+graphify update . >/dev/null 2>&1 ||
+  echo "post-checkout: graphify update failed; run it by hand to see why" >&2
+exit 0

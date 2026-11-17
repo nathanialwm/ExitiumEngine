@@ -49,7 +49,7 @@ Later consumers:
 | 21 | Networking | Authoritative server + client. Concurrent players in the thousands now, offline gains for many more. Architecture optimized toward 100M concurrent. | Engine provides netcode, a headless server runtime, and horizontally scalable/stateless server design. See C18. |
 | 22 | Destruction | Both cellular (Noita-like) and polygon fracture; specifics later | Groundwork only: chunked grid storage, GPU compute pipeline, dirty-region tracking, dynamic collider regeneration interface. |
 | 23 | MCP | All of it: docs/API queries, live editor/game control, builds/tests/benchmarks. **The engine assumes the main user is an AI agent.** | Every editor capability must be reachable through MCP. This is a core design rule, not an add-on. |
-| 24 | Graphify | Git hook on each push; graph output committed | `graphify-out/` lives in the repo. A pre-push hook regenerates it. See R9. |
+| 24 | Graphify | Git hook on each push; graph output committed | `graphify-out/` lives in the repo. A pre-push hook regenerates it. See R9. Superseded by ADR-0004: the graph is local and gitignored. |
 | 25 | GitHub | New private repo `nathanialwm/ExitiumEngine` | |
 | 26 | CI | No runners yet. Self-hosted Docker runners. **Every check blocks merge.** | fmt, clippy, tests, bench regression, WASM build, plus the platform build matrix. |
 | 27 | Toolchain | Stable Rust only | No portable SIMD; use `wide` or `std::arch` behind cfg. Pin the toolchain with `rust-toolchain.toml`. |
@@ -144,7 +144,7 @@ The engine must degrade gracefully, e.g. a single-threaded scheduler and no comp
 
 **R8. Full Lua access vs. future modding.** Full engine access is fine for first-party scripts. Modding later will need a sandboxed capability tier, so the Lua API should be layered from the start (a `core` safe tier vs. a `privileged` tier) so modding doesn't force a rewrite.
 
-**R9. Graphify on push.** A `pre-push` hook can't add a commit to the push that is already running. *Proposal:* the hook runs `graphify update .`; if the output changed, it commits `chore(graph): refresh` and aborts with "graph updated, push again". Agents push through an `xtask push` wrapper that retries automatically. `graph.json` merge conflicts between parallel branches are handled by graphify's union merge driver, configured in `.gitattributes`.
+**R9. Graphify on push.** *(Superseded by ADR-0004: the graph is no longer committed.)* A `pre-push` hook can't add a commit to the push that is already running. *Proposal:* the hook runs `graphify update .`; if the output changed, it commits `chore(graph): refresh` and aborts with "graph updated, push again". Agents push through an `xtask push` wrapper that retries automatically. `graph.json` merge conflicts between parallel branches are handled by graphify's union merge driver, configured in `.gitattributes`.
 
 **R10. Toolchain age.** The installed toolchain is Rust 1.89 (2025). Phase 0 will update stable and pin a current version in `rust-toolchain.toml`.
 

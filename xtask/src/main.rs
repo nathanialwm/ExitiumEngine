@@ -15,8 +15,8 @@ commands:
   ci <step>                 run one CI step: fmt | clippy | test | wasm | deny | miri | all
   bench-ci <base-ref>       benchmark <base-ref> and HEAD, then run bench-compare
   bench-compare [percent]   fail if any criterion benchmark regressed (default 5%)
-  push [git push args]      git push, retrying once if the pre-push hook refreshed the graph
-  install-hooks             point git at scripts/hooks and register the graph merge driver";
+  push [git push args]      git push (the pre-push hook refreshes the local graph)
+  install-hooks             point git at scripts/hooks (local graph build and refresh)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

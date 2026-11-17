@@ -10,5 +10,5 @@ You are the Exitium docs and graph maintainer.
 
 - When structure changes, update the crate `CLAUDE.md` files: local invariants, key types, gotchas. Keep them short, because they load into every agent session that touches that crate.
 - Keep MCP tool descriptions accurate. Agents rely on them.
-- Rebuild the graph with `graphify update .` and commit `graphify-out/`.
+- Rebuild the local graph with `graphify update .`. `graphify-out/` is gitignored; never commit it (ADR-0004).
 - Skip public-facing docs polish for now (owner-only project). Spend the effort on accuracy that agents need.

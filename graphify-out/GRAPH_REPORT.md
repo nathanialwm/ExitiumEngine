@@ -1,17 +1,17 @@
 # Graph Report - exitium  (2026-11-16)
 
 ## Corpus Check
-- 110 files · ~16,442 words
+- 111 files · ~17,069 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 8 file(s) not represented in the graph (top: .toml 4, (none) 4)
 
 ## Summary
-- 403 nodes · 364 edges · 108 communities (23 shown, 85 thin omitted)
+- 429 nodes · 395 edges · 108 communities (23 shown, 85 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 6 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `ace8188b`
+- Built from commit: `2c824641`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -76,17 +76,17 @@
 - pull_request_template.md
 - merge-pr.sh
 - entrypoint.sh
-- volumes
+- pr-approval.yml
 
 ## God Nodes (most connected - your core abstractions)
 1. `Step-by-step plan` - 11 edges
-2. `Exitium Engine — Agent Guide` - 10 edges
-3. `jobs` - 9 edges
-4. `volumes` - 9 edges
-5. `run` - 8 edges
-6. `Spec: <feature>` - 8 edges
-7. `uses` - 7 edges
-8. `bench_ci()` - 7 edges
+2. `bench_ci()` - 10 edges
+3. `Exitium Engine — Agent Guide` - 10 edges
+4. `jobs` - 9 edges
+5. `volumes` - 9 edges
+6. `run` - 8 edges
+7. `Spec: <feature>` - 8 edges
+8. `uses` - 7 edges
 9. `gate()` - 7 edges
 10. `step()` - 7 edges
 
@@ -108,8 +108,8 @@
 ## Communities (108 total, 85 thin omitted)
 
 ### Community 0 - "bench.rs"
-Cohesion: 0.16
-Nodes (21): bench_ci(), cargo_bench(), Change, change(), collect_changes(), compare(), DEFAULT_THRESHOLD_PERCENT, gate() (+13 more)
+Cohesion: 0.14
+Nodes (26): ALLOW_REMOVED_ENV, bench_ci(), cargo_bench(), Change, change(), collect_changes(), compare(), DEFAULT_THRESHOLD_PERCENT (+18 more)
 
 ### Community 1 - "ci.rs"
 Cohesion: 0.13
@@ -117,7 +117,7 @@ Nodes (16): clippy(), dir_contains(), fmt(), miri(), NATIVE_ONLY, step(), test()
 
 ### Community 2 - "jobs"
 Cohesion: 0.07
-Nodes (38): if, runs-on, steps, outputs, runs-on, steps, if, needs (+30 more)
+Nodes (40): if, runs-on, steps, outputs, runs-on, steps, if, needs (+32 more)
 
 ### Community 3 - "Exitium Engine — Interview Results"
 Cohesion: 0.18
@@ -128,8 +128,8 @@ Cohesion: 0.09
 Nodes (21): AI software factory design, Cross-cutting rules, Exitium Engine — Plan, Flow, Human gates, enforced by the `human-gate` CI check, Immediate next steps, Overview, Phase 0 — Repository and factory bootstrap (manual, with owner) (+13 more)
 
 ### Community 5 - "volumes"
-Cohesion: 0.11
-Nodes (22): REPO_URL, RUNNER_LABELS, RUNNER_NAME, RUNNER_TOKEN, build, environment, image, restart (+14 more)
+Cohesion: 0.08
+Nodes (31): REPO_URL, RUNNER_LABELS, RUNNER_NAME, RUNNER_TOKEN, build, environment, image, restart (+23 more)
 
 ### Community 6 - "Exitium Engine — Agent Guide"
 Cohesion: 0.18
@@ -180,8 +180,8 @@ Cohesion: 0.14
 Nodes (13): description, label, value, body, attributes, id, type, validations (+5 more)
 
 ### Community 99 - "env"
-Cohesion: 0.22
-Nodes (11): ACTION, TITLE, runs-on, steps, jobs, human-gate, pr-title, runs-on (+3 more)
+Cohesion: 0.18
+Nodes (13): ACTION, LABEL, SENDER, TITLE, runs-on, steps, jobs, human-gate (+5 more)
 
 ### Community 101 - "CI runners"
 Cohesion: 0.40
@@ -195,29 +195,29 @@ Nodes (4): Changes, Gates, Summary, Verification
 Cohesion: 0.67
 Nodes (3): check_status(), GH_TOKEN, merge-pr.sh script
 
-### Community 107 - "volumes"
-Cohesion: 0.22
-Nodes (9): volumes, linux-1-cargo, linux-1-state, linux-1-target, linux-1-work, linux-2-cargo, linux-2-state, linux-2-target (+1 more)
+### Community 107 - "pr-approval.yml"
+Cohesion: 0.12
+Nodes (16): GH_TOKEN, HEAD_SHA, REPO, jobs, record, name, on, pull_request_target (+8 more)
 
 ## Knowledge Gaps
 - **31 isolated node(s):** `GH_TOKEN`, `exitium`, `exitium_app`, `exitium_assets`, `exitium_audio` (+26 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 271 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 284 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **85 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `jobs` connect `jobs` to `ci.yml`?**
-  _High betweenness centrality (0.011) - this node is a cross-community bridge._
+  _High betweenness centrality (0.010) - this node is a cross-community bridge._
 - **What connects `GH_TOKEN`, `exitium`, `exitium_app` to the rest of the system?**
   _31 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `ci.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.12648221343873517 - nodes in this community are weakly interconnected._
+- **Should `bench.rs` be split into smaller, more focused modules?**
+  _Cohesion score 0.1354679802955665 - nodes in this community are weakly interconnected._
 - **Why does `main()` connect `ci.rs` to `bench.rs`?**
   _High betweenness centrality (0.003) - this node is a cross-community bridge._
+- **Should `ci.rs` be split into smaller, more focused modules?**
+  _Cohesion score 0.12648221343873517 - nodes in this community are weakly interconnected._
+- **Why does `jobs` connect `env` to `pr-gates.yml`?**
+  _High betweenness centrality (0.003) - this node is a cross-community bridge._
 - **Should `jobs` be split into smaller, more focused modules?**
-  _Cohesion score 0.07254623044096728 - nodes in this community are weakly interconnected._
-- **Should `Step-by-step plan` be split into smaller, more focused modules?**
-  _Cohesion score 0.09090909090909091 - nodes in this community are weakly interconnected._
-- **Should `volumes` be split into smaller, more focused modules?**
-  _Cohesion score 0.11462450592885376 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06794871794871794 - nodes in this community are weakly interconnected._

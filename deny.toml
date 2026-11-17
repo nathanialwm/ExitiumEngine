@@ -1,6 +1,6 @@
 # cargo-deny policy. Run with `cargo deny check`. CI runs it on every PR.
-# License policy follows ADR-0002: permissive licenses only, so the engine can
-# move to MIT/Apache-2.0 later without a dependency audit. No copyleft.
+# License policy follows ADR-0003: the engine is MIT, so dependencies must be
+# permissive. No copyleft.
 
 [graph]
 all-features = true
@@ -27,7 +27,7 @@ allow = [
     "BSL-1.0",
 ]
 
-# Workspace crates are proprietary (ADR-0002) and never published.
+# Workspace crates are not published to crates.io yet, so skip license checks on them.
 [licenses.private]
 ignore = true
 

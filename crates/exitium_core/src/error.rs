@@ -59,6 +59,7 @@ use std::io;
 
 use crate::guid::ParseGuidError;
 use crate::math::ParseColorError;
+use crate::num::ParseNumError;
 
 /// An error at a crate boundary. The [module docs](crate::error) say when to
 /// use it instead of a crate-local error.
@@ -71,6 +72,8 @@ pub enum Error {
     ParseGuid(ParseGuidError),
     /// A text that should be a hex [`Color`](crate::Color) is not one.
     ParseColor(ParseColorError),
+    /// A text that should be a [`Num`](crate::Num) is not one.
+    ParseNum(ParseNumError),
     /// A file, stream or other I/O operation failed.
     Io(io::Error),
     /// Any other error or message, boxed whole. Build it with
@@ -105,6 +108,7 @@ impl fmt::Display for Error {
         match self {
             Self::ParseGuid(error) => fmt::Display::fmt(error, f),
             Self::ParseColor(error) => fmt::Display::fmt(error, f),
+            Self::ParseNum(error) => fmt::Display::fmt(error, f),
             Self::Io(error) => fmt::Display::fmt(error, f),
             Self::Other(error) => fmt::Display::fmt(error, f),
         }
@@ -118,6 +122,7 @@ impl StdError for Error {
         match self {
             Self::ParseGuid(error) => error.source(),
             Self::ParseColor(error) => error.source(),
+            Self::ParseNum(error) => error.source(),
             Self::Io(error) => error.source(),
             Self::Other(error) => error.source(),
         }
@@ -138,6 +143,13 @@ impl From<ParseColorError> for Error {
     }
 }
 
+impl From<ParseNumError> for Error {
+    #[inline]
+    fn from(error: ParseNumError) -> Self {
+        Self::ParseNum(error)
+    }
+}
+
 impl From<io::Error> for Error {
     #[inline]
     fn from(error: io::Error) -> Self {
@@ -148,7 +160,7 @@ impl From<io::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Color, Guid};
+    use crate::{Color, Guid, Num};
 
     /// An error with a source, to check what `Error` forwards.
     #[derive(Debug)]
@@ -197,6 +209,9 @@ mod tests {
         fn tint(text: &str) -> Result<Color> {
             Ok(Color::from_hex(text)?)
         }
+        fn cost(text: &str) -> Result<Num> {
+            Ok(Num::parse(text)?)
+        }
 
         assert!(matches!(
             load("nope"),
@@ -207,6 +222,8 @@ mod tests {
         let error = tint("#ff").unwrap_err();
         assert!(matches!(error, Error::ParseColor(e) if e == color));
         assert_eq!(report(&error), [color.to_string()]);
+        assert!(matches!(cost("1.5K"), Err(Error::ParseNum(ParseNumError))));
+        assert_eq!(cost("1.5e3").ok(), Some(Num::from(1500)));
     }
 
     #[test]
@@ -230,6 +247,8 @@ mod tests {
     #[test]
     fn every_message_is_reported_once() {
         let parse = ParseGuidError::InvalidLength { len: 3 };
+        assert_eq!(report(&Error::from(parse)), [parse.to_string()]);
+        let parse = ParseNumError;
         assert_eq!(report(&Error::from(parse)), [parse.to_string()]);
         assert_eq!(report(&Error::other("plain message")), ["plain message"]);
         // `io::Error` is itself transparent over a custom error, so both paths

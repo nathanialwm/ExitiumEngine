@@ -15,6 +15,11 @@ const NATIVE_ONLY: &[&str] = &[
     "exitium_cli",
 ];
 
+/// Off-by-default features that change what a crate compiles. The workspace
+/// runs build with default features, so clippy, test and wasm also check each
+/// crate here with its feature on.
+const FEATURE_CHECKS: &[(&str, &str)] = &[("exitium_profiler", "profiling")];
+
 pub fn step(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("fmt") => fmt(),
@@ -52,7 +57,24 @@ fn clippy() -> Result<(), String> {
             "-D",
             "warnings",
         ],
-    )
+    )?;
+    for (name, feature) in FEATURE_CHECKS {
+        run(
+            "cargo",
+            &[
+                "clippy",
+                "-p",
+                name,
+                "--all-targets",
+                "--features",
+                feature,
+                "--",
+                "-D",
+                "warnings",
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 /// Uses nextest when installed (CI images have it), plain `cargo test`
@@ -67,10 +89,14 @@ fn test() -> Result<(), String> {
             "cargo",
             &["nextest", "run", "--workspace", "--no-tests=pass"],
         )?;
-        run("cargo", &["test", "--workspace", "--doc"])
+        run("cargo", &["test", "--workspace", "--doc"])?;
     } else {
-        run("cargo", &["test", "--workspace"])
+        run("cargo", &["test", "--workspace"])?;
     }
+    for (name, feature) in FEATURE_CHECKS {
+        run("cargo", &["test", "-p", name, "--features", feature])?;
+    }
+    Ok(())
 }
 
 fn wasm() -> Result<(), String> {
@@ -78,7 +104,22 @@ fn wasm() -> Result<(), String> {
     for name in NATIVE_ONLY {
         args.extend(["--exclude", name]);
     }
-    run("cargo", &args)
+    run("cargo", &args)?;
+    for (name, feature) in FEATURE_CHECKS {
+        run(
+            "cargo",
+            &[
+                "build",
+                "-p",
+                name,
+                "--features",
+                feature,
+                "--target",
+                "wasm32-unknown-unknown",
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 /// Runs Miri on every crate that contains a designated `unsafe` module, i.e.

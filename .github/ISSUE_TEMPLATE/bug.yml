@@ -1,0 +1,31 @@
+name: Bug
+description: Something is broken.
+title: "fix(<scope>): <summary>"
+labels: ["status:needs-approval", "bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: Observed behavior, with logs or output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands, test name or a minimal snippet.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ] A regression test covers the bug.

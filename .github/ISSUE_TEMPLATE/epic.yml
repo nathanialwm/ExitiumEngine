@@ -1,0 +1,25 @@
+name: Epic
+description: A roadmap item the architect splits into PR-sized issues.
+title: "epic: <summary>"
+labels: ["status:needs-approval", "type:epic"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+    validations:
+      required: true
+  - type: textarea
+    id: exit
+    attributes:
+      label: Exit criteria
+      description: What must be true for the epic to be done (see PLAN.md phase exits).
+    validations:
+      required: true
+  - type: textarea
+    id: issues
+    attributes:
+      label: Issues
+      description: Filled in by the architect, as a task list of issue links in dependency order.
+      value: |
+        - [ ] 

@@ -1,0 +1,109 @@
+# PR gates, posted as commit statuses on the PR head:
+#   pr-title    the title is a Conventional Commit (it becomes the squash commit).
+#   human-gate  PRs touching a human-gate area (CLAUDE.md "Human gates") need the
+#               `human-approved` label, applied by the owner, after the latest push.
+#
+# Uses pull_request_target so the gate logic always comes from `main`: a PR cannot
+# weaken its own gate. No PR code is checked out or run here.
+name: pr-gates
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, labeled, unlabeled, ready_for_review]
+
+concurrency:
+  group: pr-gates-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  PR: ${{ github.event.pull_request.number }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  OWNER_LOGIN: nathanialwm
+
+jobs:
+  pr-title:
+    runs-on: [self-hosted, exitium-linux]
+    steps:
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9_,/-]+\))?!?: [^ ].*$'
+          if [[ "$TITLE" =~ $pattern ]]; then
+            state=success; desc="Conventional Commit title"
+          else
+            state=failure; desc="Title must be a Conventional Commit, e.g. feat(ecs): add queries"
+          fi
+          gh api "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context=pr-title -f description="$desc" > /dev/null
+          [ "$state" = success ]
+
+  human-gate:
+    runs-on: [self-hosted, exitium-linux]
+    steps:
+      - env:
+          ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          status() { gh api "repos/$REPO/statuses/$HEAD_SHA" -f state="$1" -f context=human-gate -f description="$2" > /dev/null; }
+
+          # Approval covers the commits it was given on. A new push revokes it.
+          labels=$(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name')
+          if [ "$ACTION" = synchronize ] && grep -qx human-approved <<< "$labels"; then
+            gh api -X DELETE "repos/$REPO/issues/$PR/labels/human-approved" > /dev/null
+            labels=$(grep -vx human-approved <<< "$labels" || true)
+          fi
+
+          reasons=()
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
+          gate_paths='^(\.github/|\.claude/|CLAUDE\.md$|AGENTS\.md$|xtask/|scripts/factory/|scripts/hooks/|ci/|deny\.toml$|LICENSE|docs/decisions/0002-|Cargo\.toml$|rust-toolchain\.toml$|crates/exitium/src/|crates/exitium_serial/|crates/exitium_save/|crates/exitium_steam/)'
+          if hits=$(grep -E "$gate_paths" <<< "$files"); then
+            reasons+=("gated paths: $(head -5 <<< "$hits" | paste -sd ' ')")
+          fi
+
+          # New external dependencies appear as added `source = ` lines in Cargo.lock.
+          patches=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.filename == "Cargo.lock") | .patch // "TRUNCATED"')
+          if grep -qE '^\+source = |^TRUNCATED$' <<< "$patches"; then
+            reasons+=("new dependencies in Cargo.lock")
+          fi
+
+          added=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].patch // ""' | grep -E '^\+' || true)
+          if grep -qiE 'secrets\.|private[-_]key|credentials\.json|api[-_]?key' <<< "$added"; then
+            reasons+=("references secrets")
+          fi
+
+          # A gate:human label is sticky: once applied, removing it does not lift the gate.
+          ever_gated=$(gh api --paginate "repos/$REPO/issues/$PR/timeline" \
+            --jq '.[] | select(.event == "labeled" and .label.name == "gate:human") | .label.name' | head -1)
+          if [ -n "$ever_gated" ]; then
+            reasons+=("labelled gate:human")
+          fi
+
+          if [ ${#reasons[@]} -eq 0 ]; then
+            status success "No human gate applies"
+            exit 0
+          fi
+          printf 'gate applies: %s\n' "${reasons[@]}"
+          grep -qx gate:human <<< "$labels" || gh api "repos/$REPO/issues/$PR/labels" -f "labels[]=gate:human" > /dev/null
+
+          approver=$(gh api --paginate "repos/$REPO/issues/$PR/timeline" \
+            --jq '.[] | select(.event == "labeled" and .label.name == "human-approved") | .actor.login' | tail -1)
+          if grep -qx human-approved <<< "$labels" && [ "$approver" = "$OWNER_LOGIN" ]; then
+            status success "Approved by $OWNER_LOGIN"
+            exit 0
+          fi
+
+          # Ping the owner once per PR so a GitHub notification goes out.
+          marker='<!-- human-gate -->'
+          if ! gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[].body' | grep -qF "$marker"; then
+            body=$(printf '%s\n@%s this PR needs the `human-approved` label before merge.\n\n' "$marker" "$OWNER_LOGIN"; printf -- '- %s\n' "${reasons[@]}")
+            gh api "repos/$REPO/issues/$PR/comments" -f body="$body" > /dev/null
+          fi
+          status failure "Needs human-approved from $OWNER_LOGIN"
+          exit 1

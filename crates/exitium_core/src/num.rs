@@ -36,6 +36,8 @@
 //! ```
 //! use exitium_core::Num;
 //!
+//! assert_eq!(Num::from(5), Num::from(5.0)); // integer literals convert exactly
+//!
 //! let big = Num::from(1e300);
 //! assert_eq!(big * big, Num::MAX); // saturates instead of reaching inf
 //! assert_eq!(big * big - big * big, Num::ZERO); // MAX - MAX, not inf - inf
@@ -51,9 +53,9 @@ use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssi
 
 /// The engine's number type: an `f64` that is always finite.
 ///
-/// Build one with [`Num::from_f64`], or `Num::from` on an `f64`, `i64` or
-/// `u64`. Arithmetic saturates instead of overflowing and never produces NaN;
-/// the [module docs](crate::num) give the exact policy.
+/// Build one with [`Num::from_f64`], or `Num::from` on an `f64`, `i32`,
+/// `u32`, `i64` or `u64`. Arithmetic saturates instead of overflowing and
+/// never produces NaN; the [module docs](crate::num) give the exact policy.
 // Invariant: the f64 is finite and not -0.0. Only `from_f64`, the constants
 // and the derived `Default` (0.0) build a `Num`, and the `Eq`, `Ord` and
 // `Hash` impls rely on it.
@@ -154,6 +156,23 @@ impl From<f64> for Num {
     #[inline]
     fn from(value: f64) -> Self {
         Self::from_f64(value)
+    }
+}
+
+impl From<i32> for Num {
+    /// Always exact. An integer literal with no suffix falls back to `i32`,
+    /// so this is the conversion `Num::from(5)` uses.
+    #[inline]
+    fn from(value: i32) -> Self {
+        Self::from_f64(f64::from(value))
+    }
+}
+
+impl From<u32> for Num {
+    /// Always exact.
+    #[inline]
+    fn from(value: u32) -> Self {
+        Self::from_f64(f64::from(value))
     }
 }
 
@@ -394,6 +413,12 @@ mod tests {
         assert_eq!(Num::from(2.5), n(2.5));
         assert_eq!(Num::from(f64::NAN), Num::ZERO);
         assert_eq!(Num::from(f64::NEG_INFINITY), Num::MIN);
+        assert_eq!(Num::from(-7_i32), n(-7.0));
+        assert_eq!(Num::from(0_i32).as_f64().to_bits(), 0);
+        assert_eq!(Num::from(i32::MIN), n(-(2f64.powi(31))));
+        assert_eq!(Num::from(i32::MAX), n(2f64.powi(31) - 1.0));
+        assert_eq!(Num::from(0_u32).as_f64().to_bits(), 0);
+        assert_eq!(Num::from(u32::MAX), n(2f64.powi(32) - 1.0));
         assert_eq!(Num::from(-7_i64), n(-7.0));
         assert_eq!(Num::from(0_i64).as_f64().to_bits(), 0);
         assert_eq!(Num::from(i64::MIN), n(-(2f64.powi(63))));
@@ -402,6 +427,13 @@ mod tests {
         assert_eq!(Num::from(u64::MAX), n(2f64.powi(64)));
         // Above 2^53, integers round to the nearest f64.
         assert_eq!(Num::from((1_u64 << 53) + 1), Num::from(1_u64 << 53));
+    }
+
+    #[test]
+    fn unsuffixed_integer_literals_convert() {
+        // With no suffix, an integer literal falls back to `i32`.
+        assert_eq!(Num::from(5), Num::from(5.0));
+        assert_eq!(Num::from(-5), Num::from(-5.0));
     }
 
     #[test]

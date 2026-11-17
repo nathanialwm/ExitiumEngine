@@ -13,18 +13,18 @@ use std::process::Command;
 
 const DEFAULT_THRESHOLD_PERCENT: f64 = 5.0;
 
+/// Set by CI when the PR carries the `bench:removal-ok` label, for PRs that
+/// delete or rename benchmarks on purpose.
+const ALLOW_REMOVED_ENV: &str = "EXITIUM_ALLOW_REMOVED_BENCHES";
+
 pub fn bench_ci(args: &[String]) -> Result<(), String> {
     let base_ref = args
         .first()
         .ok_or("usage: cargo xtask bench-ci <base-ref>")?;
+    let allow_removed = std::env::var(ALLOW_REMOVED_ENV).is_ok_and(|v| v == "true" || v == "1");
     let target_dir = target_dir()?;
     let criterion_dir = target_dir.join("criterion");
     let worktree = target_dir.join("bench-base");
-
-    if !has_bench_targets(Path::new("."))? {
-        println!("bench-ci: no bench targets at HEAD; nothing to gate");
-        return Ok(());
-    }
 
     // Runners are persistent, so clear results from earlier runs first.
     if criterion_dir.exists() {
@@ -46,27 +46,80 @@ pub fn bench_ci(args: &[String]) -> Result<(), String> {
             base_ref,
         ],
     )?;
-    // A base without benchmarks just leaves nothing to compare against.
-    let base_has_benches = has_bench_targets(&worktree);
-    let base = match base_has_benches {
-        Ok(true) => cargo_bench(&worktree, &target_dir, &["--save-baseline", "base"]),
-        Ok(false) => Ok(()),
-        Err(ref e) => Err(e.clone()),
-    };
+    let base = run_base(&worktree, &target_dir);
     let _ = Command::new("git")
         .args(["worktree", "remove", "--force"])
         .arg(&worktree)
         .status();
-    base?;
+    let base_has_benches = base?;
+    let head_has_benches = has_bench_targets(Path::new("."))?;
+
+    match (base_has_benches, head_has_benches) {
+        (false, false) => {
+            println!("bench-ci: no bench targets on either side; nothing to gate");
+            return Ok(());
+        }
+        (true, false) if !allow_removed => {
+            return Err(removed_error("HEAD has no bench targets left"));
+        }
+        (true, false) => return Ok(()),
+        _ => {}
+    }
 
     cargo_bench(Path::new("."), &target_dir, &["--baseline-lenient", "base"])?;
+    if base_has_benches && !allow_removed {
+        let missing = uncompared(&criterion_dir);
+        if !missing.is_empty() {
+            return Err(removed_error(&format!(
+                "no HEAD result for: {}",
+                missing.join(", ")
+            )));
+        }
+    }
     // Both sides ran benchmarks, so an empty comparison means something broke.
-    let require_comparisons = base_has_benches == Ok(true);
-    gate(
-        &criterion_dir,
-        DEFAULT_THRESHOLD_PERCENT,
-        require_comparisons,
+    gate(&criterion_dir, DEFAULT_THRESHOLD_PERCENT, base_has_benches)
+}
+
+/// Benchmarks the base worktree into the `base` baseline. Returns whether the
+/// base had any benchmarks.
+fn run_base(worktree: &Path, target_dir: &Path) -> Result<bool, String> {
+    if !has_bench_targets(worktree)? {
+        return Ok(false);
+    }
+    cargo_bench(worktree, target_dir, &["--save-baseline", "base"])?;
+    Ok(true)
+}
+
+/// A removed or renamed benchmark could hide a regression, so it fails the gate
+/// unless the PR opts out.
+fn removed_error(detail: &str) -> String {
+    format!(
+        "benchmarks that ran on the base are missing at HEAD ({detail}). \
+         If that is intended, add the `bench:removal-ok` label to the PR."
     )
+}
+
+/// Benchmarks with a saved `base` baseline but no comparison from the HEAD run.
+fn uncompared(criterion_dir: &Path) -> Vec<String> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for path in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+            if path.join("base/estimates.json").is_file()
+                && !path.join("change/estimates.json").is_file()
+            {
+                let name = path.strip_prefix(root).unwrap_or(&path);
+                out.push(name.to_string_lossy().replace('\\', "/"));
+            } else {
+                walk(root, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(criterion_dir, criterion_dir, &mut out);
+    out.sort();
+    out
 }
 
 pub fn compare(args: &[String]) -> Result<(), String> {
@@ -276,6 +329,22 @@ mod tests {
         let empty = std::env::temp_dir().join("xtask-bench-missing-dir");
         assert!(gate(&empty, 5.0, false).is_ok());
         assert!(gate(&empty, 5.0, true).is_err());
+    }
+
+    #[test]
+    fn finds_benchmarks_without_a_head_result() {
+        let dir = std::env::temp_dir().join(format!("xtask-uncompared-{}", std::process::id()));
+        for (bench, has_change) in [("g/kept", true), ("g/removed", false)] {
+            fs::create_dir_all(dir.join(bench).join("base")).unwrap();
+            fs::write(dir.join(bench).join("base/estimates.json"), "{}").unwrap();
+            if has_change {
+                fs::create_dir_all(dir.join(bench).join("change")).unwrap();
+                fs::write(dir.join(bench).join("change/estimates.json"), "{}").unwrap();
+            }
+        }
+        let missing = uncompared(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(missing, vec!["g/removed".to_string()]);
     }
 
     #[test]

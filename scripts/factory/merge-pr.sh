@@ -6,6 +6,9 @@
 #
 # A check only counts if it was posted by the expected author. The factory App
 # can post statuses itself, so a status it wrote under a CI context is ignored.
+# github-actions[bot] statuses can only be forged by a PR that edits
+# .github/workflows, and the factory App lacks the Workflows permission, so only
+# the owner can push such changes.
 #
 # Usage: scripts/factory/merge-pr.sh <pr-number>
 # Exit codes: 0 merged, 1 a check failed, 2 checks still pending (or waiting for

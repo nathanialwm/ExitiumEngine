@@ -1,8 +1,10 @@
 # PR gates, posted as commit statuses on the PR head:
 #   pr-title    the title is a Conventional Commit (it becomes the squash commit).
 #   human-gate  PRs touching a human-gate area (CLAUDE.md "Human gates") need the
-#               `human-approved` label, applied by the owner, after the latest push.
-#               While waiting for the owner the status is `pending`, not `failure`.
+#               owner's approval *of the head commit*: the `human-approved` status
+#               that pr-approval.yml posts when the owner applies the label. A push
+#               creates a new head with no approval, so it revokes approval by
+#               construction. While waiting the status is `pending`, not `failure`.
 #
 # Uses pull_request_target so the gate logic always comes from `main`: a PR cannot
 # weaken its own gate. No PR code is checked out or run here, and the jobs run on
@@ -13,8 +15,8 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize, edited, labeled, unlabeled, ready_for_review]
 
-# No cancel-in-progress: a later event must not cancel the run that revokes an
-# approval after a push.
+# Queued runs may still replace each other; that is safe because each run
+# re-derives everything from the current PR state and the head commit's statuses.
 concurrency:
   group: pr-gates-${{ github.event.pull_request.number }}
   cancel-in-progress: false
@@ -53,13 +55,16 @@ jobs:
     steps:
       - env:
           ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER: ${{ github.event.sender.login }}
         run: |
           set -euo pipefail
           status() { gh api "repos/$REPO/statuses/$HEAD_SHA" -f state="$1" -f context=human-gate -f description="$2" > /dev/null; }
           # Paginated arrays are merged with `jq -s add`. Outputs are captured into variables before grepping them, so an early
           # exit from grep can't kill a pipeline with SIGPIPE under pipefail.
 
-          # Approval covers the commits it was given on. A new push revokes it.
+          # The label is only a request; approval lives in the head commit's
+          # human-approved status. Drop a stale label on push so the owner can re-add it.
           labels=$(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name')
           if [ "$ACTION" = synchronize ] && grep -qx human-approved <<< "$labels"; then
             gh api -X DELETE "repos/$REPO/issues/$PR/labels/human-approved" > /dev/null
@@ -70,7 +75,7 @@ jobs:
           pr_files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" | jq -s add)
           # Renames count on both sides, so moving a file out of a gated path is caught.
           names=$(jq -r '.[] | .filename, (.previous_filename // empty)' <<< "$pr_files")
-          gate_paths='^(\.github/|\.claude/|\.cargo/|\.config/|CLAUDE\.md$|AGENTS\.md$|xtask/|scripts/|ci/|deny\.toml$|rustfmt\.toml$|clippy\.toml$|\.gitattributes$|LICENSE|docs/decisions/0002-|Cargo\.toml$|rust-toolchain\.toml$|crates/exitium/src/|crates/exitium_serial/|crates/exitium_save/|crates/exitium_steam/)'
+          gate_paths='(^|/)(CLAUDE|AGENTS)\.md$|^(\.github/|\.claude/|\.cargo/|\.config/|xtask/|scripts/|ci/|deny\.toml$|rustfmt\.toml$|clippy\.toml$|\.gitattributes$|LICENSE|docs/decisions/0002-|Cargo\.toml$|rust-toolchain\.toml$|crates/exitium/src/|crates/exitium_serial/|crates/exitium_save/|crates/exitium_steam/)'
           if hits=$(grep -E "$gate_paths" <<< "$names"); then
             reasons+=("gated paths: $(head -5 <<< "$hits" | paste -sd ' ')")
           fi
@@ -84,6 +89,11 @@ jobs:
           added=$(jq -r '.[].patch // ""' <<< "$pr_files" | grep -E '^\+' || true)
           if grep -qiE 'secrets\.|private[-_]key|credentials\.json|api[-_]?key' <<< "$added"; then
             reasons+=("references secrets")
+          fi
+          # GitHub omits the patch for oversized diffs; such code/config files can't be
+          # scanned, so they gate. (Binary assets also lack a patch and are exempt.)
+          if jq -e 'any(.[]; .patch == null and .changes > 0 and (.filename | test("[.](rs|toml|ya?ml|sh|ps1|py|lock)$")))' <<< "$pr_files" > /dev/null; then
+            reasons+=("diff too large to scan")
           fi
           rust_added=$(jq -r '.[] | select(.filename | endswith(".rs")) | .patch // ""' <<< "$pr_files" | grep -E '^\+' || true)
           if grep -qE '\bunsafe\b|allow\(unsafe_code\)' <<< "$rust_added"; then
@@ -103,8 +113,9 @@ jobs:
           printf 'gate applies: %s\n' "${reasons[@]}"
           grep -qx gate:human <<< "$labels" || gh api "repos/$REPO/issues/$PR/labels" -f "labels[]=gate:human" > /dev/null
 
-          approver=$(jq -r '[.[] | select(.event == "labeled" and .label.name == "human-approved") | .actor.login] | last // ""' <<< "$timeline")
-          if grep -qx human-approved <<< "$labels" && [ "$approver" = "$OWNER_LOGIN" ]; then
+          # This event may itself be the approval; pr-approval.yml records it durably.
+          approvals=$(gh api "repos/$REPO/commits/$HEAD_SHA/statuses?per_page=100" --jq '[.[] | select(.context == "human-approved" and .creator.login == "github-actions[bot]" and .state == "success")] | length')
+          if [ "$approvals" != 0 ] || { [ "$ACTION" = labeled ] && [ "$LABEL" = human-approved ] && [ "$SENDER" = "$OWNER_LOGIN" ]; }; then
             status success "Approved by $OWNER_LOGIN"
             exit 0
           fi

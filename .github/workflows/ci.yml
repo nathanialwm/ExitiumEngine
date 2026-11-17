@@ -73,6 +73,8 @@ jobs:
         with:
           fetch-depth: 0
       - run: cargo xtask bench-ci "${{ github.event.pull_request.base.sha }}"
+        env:
+          EXITIUM_ALLOW_REMOVED_BENCHES: ${{ contains(github.event.pull_request.labels.*.name, 'bench:removal-ok') }}
 
   windows:
     runs-on: [self-hosted, exitium-windows]

@@ -1,0 +1,27 @@
+# Records the owner's approval on the exact commit it was given on: when
+# nathanialwm applies `human-approved`, post a `human-approved` status on the PR
+# head. pr-gates.yml's human-gate requires that status, so approval never carries
+# over to commits pushed later.
+#
+# Separate workflow with no concurrency group, so no later event can cancel it.
+name: pr-approval
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  statuses: write
+
+jobs:
+  record:
+    if: github.event.label.name == 'human-approved' && github.event.sender.login == 'nathanialwm'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api "repos/$REPO/statuses/$HEAD_SHA" -f state=success -f context=human-approved \
+            -f description="Approved by nathanialwm at this commit" > /dev/null

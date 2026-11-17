@@ -30,9 +30,6 @@ RUN curl -fsSL "https://github.com/actions/runner/releases/download/v${RUNNER_VE
 
 USER runner
 ENV PATH=/home/runner/.cargo/bin:$PATH
-# Outside the checkout: actions/checkout runs `git clean -ffdx`, which would wipe
-# an in-tree target/ and force a full rebuild on every job.
-ENV CARGO_TARGET_DIR=/home/runner/target
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" \
     && rustup component add clippy rustfmt \
     && rustup target add wasm32-unknown-unknown \
@@ -41,6 +38,11 @@ RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-to
     && cargo install --locked cargo-nextest cargo-deny \
     && rm -rf /home/runner/.cargo/registry \
     && mkdir -p /home/runner/.cargo/registry /home/runner/target
+
+# Set after `cargo install`, so tool build output doesn't end up in the image.
+# Outside the checkout: actions/checkout runs `git clean -ffdx`, which would wipe
+# an in-tree target/ and force a full rebuild on every job.
+ENV CARGO_TARGET_DIR=/home/runner/target
 
 COPY --chown=runner:runner entrypoint.sh /home/runner/entrypoint.sh
 ENTRYPOINT ["/home/runner/entrypoint.sh"]

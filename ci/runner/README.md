@@ -13,7 +13,9 @@ Benchmarks run only on `exitium-linux-1` (label `exitium-bench`), so they queue 
 
 Every runner keeps `CARGO_TARGET_DIR` outside the checkout, because `actions/checkout` deletes untracked files.
 
-**Trust model.** These runners execute PR code on the owner's PC, and the Windows runner runs as the owner's account. That is no wider than the agents themselves, which already run on this machine as the owner (INTERVIEW.md A6). The PR gates (`pr-gates.yml`) hold a write token, so they run on GitHub-hosted runners and never here.
+**Trust model.** These runners execute PR code on the owner's PC, and the Windows runner runs as the owner's account. That is no wider than the agents themselves, which already run on this machine as the owner (INTERVIEW.md A6). The PR gates (`pr-gates.yml`) hold a write token, so they run on GitHub-hosted runners and never here. Runner state (target dirs, cargo registry) persists across jobs for speed, so one PR's build script could affect a later run. That is acceptable while every PR comes from the owner or the factory; switch to `--ephemeral` runners before accepting outside contributions.
+
+Runner labels are set at registration. To change one on a registered runner, edit it through the API (`POST repos/{repo}/actions/runners/{id}/labels`) or re-register with `docker compose down -v`.
 
 Windows builds are checked natively rather than cross-compiled with `cargo-xwin`, so the Linux image does not carry the MSVC SDK.
 

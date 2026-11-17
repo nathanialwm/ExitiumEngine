@@ -8,8 +8,9 @@ set -euo pipefail
 # Git passes one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
 # Only branch pushes refresh the graph; deletions and tags are left alone.
 pushes_branch=false
-while read -r local_ref local_sha _remote_ref _remote_sha; do
-  if [[ "$local_ref" == refs/heads/* && ! "$local_sha" =~ ^0+$ ]]; then
+# Check the remote ref: `git push origin HEAD` reports the local ref as "HEAD".
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  if [[ "$remote_ref" == refs/heads/* && ! "$local_sha" =~ ^0+$ ]]; then
     pushes_branch=true
   fi
 done

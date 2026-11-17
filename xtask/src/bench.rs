@@ -30,20 +30,22 @@ use std::process::Command;
 const DEFAULT_THRESHOLD_PERCENT: f64 = 5.0;
 
 /// Rounds per side. Overridable with `EXITIUM_BENCH_ROUNDS` for noise studies.
-const ROUNDS: usize = 3;
+const ROUNDS: usize = 10;
 const ROUNDS_ENV: &str = "EXITIUM_BENCH_ROUNDS";
 
-/// Shorter than criterion's defaults (3 s warm-up, 5 s measurement, 100
-/// samples): the rounds, not one long run, are what average out the noise, and
-/// six rounds of the defaults would make the job take minutes per benchmark
-/// file.
-const CRITERION_ARGS: [&str; 6] = [
+/// Much shorter than criterion's defaults (3 s warm-up, 5 s measurement, 100
+/// samples, 100k bootstrap resamples). Most of the noise differs from one
+/// process run to the next, so many short rounds beat a few long ones. The gate
+/// reads only the median point estimate, which needs no bootstrap.
+const CRITERION_ARGS: [&str; 8] = [
     "--warm-up-time",
-    "1",
+    "0.3",
     "--measurement-time",
-    "2",
+    "0.5",
     "--sample-size",
-    "50",
+    "10",
+    "--nresamples",
+    "1000",
 ];
 
 /// Set by CI when the PR carries the `bench:removal-ok` label, for PRs that
@@ -238,15 +240,23 @@ struct Rounds {
 }
 
 impl Rounds {
-    /// Relative change of the fastest HEAD round against the fastest base round
+    /// Relative change of the median HEAD round against the median base round
     /// (0.05 = 5% slower). `None` when one side has no rounds.
     fn change(&self) -> Option<f64> {
-        Some(fastest(&self.head)? / fastest(&self.base)? - 1.0)
+        Some(median(&self.head)? / median(&self.base)? - 1.0)
     }
 }
 
-fn fastest(times: &[f64]) -> Option<f64> {
-    times.iter().copied().reduce(f64::min)
+/// The middle value, or the mean of the two middle values for an even count.
+fn median(times: &[f64]) -> Option<f64> {
+    let mut sorted = times.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let mid = sorted.len() / 2;
+    match sorted.len() {
+        0 => None,
+        n if n % 2 == 1 => Some(sorted[mid]),
+        _ => Some((sorted[mid - 1] + sorted[mid]) / 2.0),
+    }
 }
 
 fn is_regression(change: f64, threshold_percent: f64) -> bool {
@@ -291,7 +301,7 @@ fn gate(benches: &[Rounds], threshold: f64, require_comparisons: bool) -> Result
     if regressions > 0 {
         Err(format!(
             "{regressions} benchmark(s) regressed by more than {threshold}% \
-             (fastest HEAD round vs fastest base round)"
+             (median HEAD round vs median base round)"
         ))
     } else {
         println!("bench-compare: no regressions over {threshold}%");
@@ -300,7 +310,7 @@ fn gate(benches: &[Rounds], threshold: f64, require_comparisons: bool) -> Result
 }
 
 fn format_times(times: &[f64]) -> String {
-    let unit = match fastest(times) {
+    let unit = match median(times) {
         Some(t) if t >= 1e6 => (1e6, "ms"),
         Some(t) if t >= 1e3 => (1e3, "µs"),
         _ => (1.0, "ns"),
@@ -457,12 +467,12 @@ mod tests {
         assert_eq!(number_after(r#"{"x": -1.5e-3}"#, "\"x\":"), Some(-0.0015));
     }
 
-    /// Scales a typical identical-code round set by per-round factors.
-    fn rounds(base: [f64; 3], head: [f64; 3]) -> Rounds {
+    /// Scales a typical round time by per-round factors (1.0 = the true cost).
+    fn rounds(base: &[f64], head: &[f64]) -> Rounds {
         Rounds {
             name: "g/b".into(),
-            base: base.map(|f| 700.0 * f).to_vec(),
-            head: head.map(|f| 700.0 * f).to_vec(),
+            base: base.iter().map(|f| 700.0 * f).collect(),
+            head: head.iter().map(|f| 700.0 * f).collect(),
         }
     }
 
@@ -470,35 +480,59 @@ mod tests {
         is_regression(bench.change().unwrap(), DEFAULT_THRESHOLD_PERCENT)
     }
 
+    /// Rounds of identical code: a few percent either way, as on the runner.
+    const NOISE: [f64; 6] = [1.03, 0.97, 1.04, 1.00, 0.96, 1.02];
+
     #[test]
     fn noise_only_passes() {
-        // Every round within a few percent of the true cost, in both directions.
-        assert!(!regressed(&rounds([1.03, 1.00, 1.04], [1.04, 1.02, 1.01])));
+        let head = [1.04, 0.99, 0.98, 1.05, 1.01, 0.97];
+        assert!(!regressed(&rounds(&NOISE, &head)));
     }
 
     #[test]
     fn real_regression_fails() {
         // A 10% slowdown is in every HEAD round, on top of the same noise.
-        assert!(regressed(&rounds([1.03, 1.00, 1.04], [1.13, 1.11, 1.10])));
+        let head = NOISE.map(|f| f * 1.10);
+        assert!(regressed(&rounds(&NOISE, &head)));
     }
 
     #[test]
-    fn regression_survives_a_noisy_base_round() {
-        // A burst on one base round must not hide a real 10% slowdown.
-        assert!(regressed(&rounds([3.10, 1.00, 1.02], [1.12, 1.10, 1.11])));
+    fn regression_survives_noisy_base_rounds() {
+        // Bursts on two base rounds must not hide a real 10% slowdown.
+        let base = [3.10, 0.97, 1.04, 1.00, 1.60, 1.02];
+        let head = NOISE.map(|f| f * 1.10);
+        assert!(regressed(&rounds(&base, &head)));
     }
 
     #[test]
     fn single_run_outlier_passes() {
         // +224%, as in CI run 44131141524, but in one HEAD round only.
-        assert!(!regressed(&rounds([1.01, 1.00, 1.02], [3.24, 1.01, 1.00])));
-        // Two of three HEAD rounds hit still pass.
-        assert!(!regressed(&rounds([1.01, 1.00, 1.02], [3.24, 1.29, 1.02])));
+        let head = [1.02, 3.24, 0.98, 1.01, 0.99, 1.03];
+        assert!(!regressed(&rounds(&NOISE, &head)));
+        // Two bursts still pass: the median needs half the rounds to move.
+        let head = [1.02, 3.24, 0.98, 1.29, 0.99, 1.03];
+        assert!(!regressed(&rounds(&NOISE, &head)));
+    }
+
+    #[test]
+    fn lucky_fast_base_round_passes() {
+        // CI run 44145347307 failed a fastest-round rule on one base round 9%
+        // faster than the rest. The median ignores it.
+        let base = [0.90, 1.03, 0.97, 1.04, 1.00, 1.02];
+        assert!(!regressed(&rounds(&base, &NOISE)));
     }
 
     #[test]
     fn improvement_passes() {
-        assert!(!regressed(&rounds([1.00, 1.01, 1.02], [0.80, 0.81, 0.79])));
+        let head = NOISE.map(|f| f * 0.80);
+        assert!(!regressed(&rounds(&NOISE, &head)));
+    }
+
+    #[test]
+    fn median_of_odd_and_even_counts() {
+        assert_eq!(median(&[]), None);
+        assert_eq!(median(&[3.0, 1.0, 2.0]), Some(2.0));
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), Some(2.5));
     }
 
     #[test]
@@ -575,8 +609,8 @@ mod tests {
 
     #[test]
     fn gate_fails_only_on_regressions() {
-        let ok = rounds([1.0, 1.0, 1.0], [1.02, 1.01, 1.03]);
-        let slow = rounds([1.0, 1.0, 1.0], [1.2, 1.2, 1.2]);
+        let ok = rounds(&NOISE, &NOISE);
+        let slow = rounds(&NOISE, &NOISE.map(|f| f * 1.2));
         assert!(gate(&[ok], 5.0, true).is_ok());
         assert!(gate(&[slow], 5.0, true).is_err());
     }

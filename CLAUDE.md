@@ -1,0 +1,76 @@
+# Exitium Engine — Agent Guide
+
+Exitium is a performance-first 2D game engine in Rust. **Its primary user is an AI agent.** Humans review and refine in a full standalone editor. This repo is an **AI software factory**: agents take approved GitHub Issues to merged PRs. Background: `PLAN.md` (architecture, roadmap) and `INTERVIEW.md` (requirements, decisions, risks). Read those only when your task needs them, not every session.
+
+## Orient cheaply
+
+1. Query the knowledge graph before reading files: `graphify query "<question>"`. You can also use `graphify explain "<Node>"` or `graphify path "A" "B"`. Start broad with `graphify-out/GRAPH_REPORT.md`.
+2. Read the target crate's own `CLAUDE.md` before editing it.
+3. Read only the files you will change, plus the files they touch. Do not sweep the repo.
+
+## Design rules (non-negotiable)
+
+1. **Agent parity.** Every editor capability is reachable through MCP (`exitium_mcp`). If you add an editor feature, you also add the MCP tool.
+2. **Reflection is the source of truth.** Inspector UI, serialization, Luau bindings and MCP schemas are all derived from `#[derive(Reflect)]`. Never hand-write a parallel schema.
+3. **All mutation goes through the command bus.** Editor, MCP and Lua changes are typed, serializable commands with undo.
+4. **Measure performance.** Any hot-path change ships with a benchmark. CI fails on a regression over 5%. Min-spec target: 4 cores, 8 GB RAM.
+5. **Glutton first, general always.** Prioritize what the first game needs, but never take a shortcut that blocks sidescroller, isometric, pixel art, multiplayer or destruction.
+6. **Readable by a basic-level Rust reviewer.** Clear module docs, documented invariants, minimal macro magic in public APIs.
+
+## Code rules
+
+- Stable Rust only, pinned in `rust-toolchain.toml`. Edition 2024.
+- `unsafe` is denied workspace-wide. Only designated modules may use `#[allow(unsafe_code)]`, and every `unsafe` block needs a `// SAFETY:` comment. Those modules need Miri tests. Changes to them are flagged `gate:human`.
+- New dependencies are a human gate. Prefer std or an existing workspace dependency. Declare versions once in `[workspace.dependencies]`.
+- Game-facing API goes through the `exitium` facade crate.
+- Comment density: module-level `//!` docs on every module. Comment only non-obvious logic. No narrating comments.
+
+## Definition of done
+
+- `cargo fmt --all` passes.
+- `cargo clippy --workspace --all-targets -- -D warnings` passes.
+- `cargo test --workspace` passes, and new behavior has tests.
+- `cargo build --workspace --target wasm32-unknown-unknown` passes for wasm-capable crates.
+- No benchmark regression over 5%.
+- Docs and MCP tool schemas are updated when behavior changed.
+- The graph has been refreshed (the pre-push hook does this).
+
+## Human gates
+
+A PR needs the owner's `human-approved` label before merge if it touches any of:
+
+- public API of the `exitium` facade
+- new dependencies
+- CI or factory config (`.github/`, `.claude/`, `CLAUDE.md`, `AGENTS.md`, `xtask/`, `scripts/factory/`)
+- save or serialization formats
+- licensing
+- anything referencing secrets
+- release workflows (Steam/itch)
+
+Label such PRs `gate:human`, and say in the PR body why the gate applies. Never apply `human-approved` yourself.
+
+## Workflow
+
+- **Branch:** `<type>/<issue#>-<slug>` (e.g. `feat/42-archetype-storage`). One issue → one branch → one worktree → one PR.
+- **Commits and PR titles:** Conventional Commits (`feat(ecs): ...`, `fix(render): ...`, `chore: ...`). PRs are squash-merged.
+- **PR body:** `Closes #N`, a summary, what changed, how it was verified, gates touched.
+- **Specs:** systems-level work needs a spec in `docs/specs/` or an ADR in `docs/decisions/`, approved before implementation. Small tasks don't.
+- **Follow-up work:** file it as an issue with the `status:needs-approval` label. Never expand the current PR's scope.
+
+## GitHub identity
+
+Agents act as the **exitium-factory** GitHub App, never as the owner. For API actions (issues, PRs, labels, reviews, statuses), wrap the command:
+
+```bash
+GH_TOKEN="$(scripts/factory/gh-app-token.sh)" gh <command>
+```
+
+Credentials live in `~/.exitium-factory/`. Never print, copy or commit them. Exception: the GitHub Projects roadmap board belongs to the owner's account, and Apps can't reach it, so use plain `gh` for `gh project` commands only.
+
+## Factory operating rules
+
+- At most **3** issues in progress at once (`status:in-progress`).
+- **Do not start a new issue when less than 5% of session usage remains.** Finish or hand off in-flight work.
+- Agent-filed issues start as `status:needs-approval`. Only the `issue-approver` agent moves them to `status:approved`.
+- Roles and models are defined in `.claude/agents/`. Skills are in `.claude/skills/`.
+- Changes to factory rules, skills or agents are PRs behind the human gate. Large or risky process changes are suggested in chat, not PR'd.

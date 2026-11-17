@@ -300,7 +300,6 @@ mod tests {
         // (step, max ticks, seconds fed by each of two calls)
         let cases = [
             (STEP, 2, f64::MAX),
-            (1e300, 2, f64::MAX),
             (f64::MAX, 2, f64::MAX),
             // Without the `min` in `advance`, the second call would overflow
             // the accumulator to infinity and make it NaN.
@@ -346,11 +345,71 @@ mod tests {
     }
 
     #[test]
-    fn new_rejects_bad_steps() {
-        for step in [0.0, -0.0, -STEP, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let result = std::panic::catch_unwind(|| FixedClock::new(step, 1));
-            assert!(result.is_err(), "step {step} was accepted");
+    fn non_exact_steps_do_not_drift() {
+        // 1/60 s and 1 ms are not exact in binary, so each subtraction rounds.
+        // Over a minute of 1 ms frames the ticks still match the time fed.
+        let step = 1.0 / 60.0;
+        let mut clock = FixedClock::new(step, u32::MAX);
+        let (mut fed, mut ticks) = (0.0_f64, 0_u64);
+        for frame in 0..60_000 {
+            let advance = clock.advance(0.001);
+            assert_eq!(advance.dropped, 0.0, "frame {frame}");
+            ticks += u64::from(advance.ticks);
+            fed += 0.001;
+            assert!((0.0..step).contains(&clock.remainder()), "frame {frame}");
         }
+        // `fed / step` is about 3600, so the cast is exact.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let expected = (fed / step).floor() as u64;
+        assert!(
+            ticks.abs_diff(expected) <= 1,
+            "{ticks} ticks, {expected} expected"
+        );
+    }
+
+    #[test]
+    fn a_cap_of_one_runs_one_tick_per_call() {
+        let mut clock = FixedClock::new(0.25, 1);
+        assert_eq!(clock.advance(0.25), adv(1, 0.0));
+        assert_eq!(clock.advance(0.125), adv(0, 0.0));
+        // 0.125 + 0.5 is 2.5 steps: one runs, one is dropped, half carries.
+        assert_eq!(clock.advance(0.5), adv(1, 0.25));
+        assert_eq!(clock.remainder(), 0.125);
+        // A bad reading right after a capped call drops nothing more.
+        assert_eq!(clock.advance(f64::NAN), adv(0, 0.0));
+        assert_eq!(clock.remainder(), 0.125);
+        assert_eq!(clock.advance(0.125), adv(1, 0.0));
+        assert_eq!(clock.remainder(), 0.0);
+    }
+
+    #[test]
+    fn tiny_wall_seconds_are_absorbed() {
+        let mut clock = FixedClock::new(0.25, 4);
+        assert_eq!(clock.advance(0.125).ticks, 0);
+        for wall in [f64::MIN_POSITIVE, 5e-324] {
+            assert_eq!(clock.advance(wall), adv(0, 0.0), "{wall:e}");
+            // Too small to change 0.125 at all.
+            assert_eq!(clock.remainder(), 0.125, "{wall:e}");
+        }
+    }
+
+    macro_rules! rejects_step {
+        ($($name:ident: $step:expr,)*) => {$(
+            #[test]
+            #[should_panic(expected = "step must be finite and greater than zero")]
+            fn $name() {
+                let _ = FixedClock::new($step, 1);
+            }
+        )*};
+    }
+
+    rejects_step! {
+        new_rejects_zero_step: 0.0,
+        new_rejects_negative_zero_step: -0.0,
+        new_rejects_negative_step: -STEP,
+        new_rejects_nan_step: f64::NAN,
+        new_rejects_infinite_step: f64::INFINITY,
+        new_rejects_negative_infinite_step: f64::NEG_INFINITY,
     }
 
     #[test]

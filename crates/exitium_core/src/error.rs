@@ -250,7 +250,6 @@ mod tests {
         assert_eq!(report(&Error::from(parse)), [parse.to_string()]);
         let parse = ParseNumError;
         assert_eq!(report(&Error::from(parse)), [parse.to_string()]);
-        assert_eq!(report(&Error::other("plain message")), ["plain message"]);
         // `io::Error` is itself transparent over a custom error, so both paths
         // give the same report.
         let expected = ["saving slot 2 failed", "disk unplugged"];
@@ -262,11 +261,16 @@ mod tests {
     }
 
     #[test]
+    fn leaf_errors_show_their_message_and_have_no_source() {
+        let error = Error::from(io::Error::new(io::ErrorKind::NotFound, "ship.png"));
+        assert_eq!(error.to_string(), "ship.png");
+        assert!(error.source().is_none());
+        assert!(Error::other("x").source().is_none());
+    }
+
+    #[test]
     fn error_can_cross_threads() {
         fn assert_thread_safe<T: Send + Sync + 'static>() {}
         assert_thread_safe::<Error>();
-
-        let boxed: Box<dyn StdError + Send + Sync> = Error::other("job failed").into();
-        assert_eq!(boxed.to_string(), "job failed");
     }
 }

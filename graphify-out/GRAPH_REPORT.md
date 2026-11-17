@@ -1,17 +1,17 @@
-# Graph Report - exitium  (2026-11-16)
+# Graph Report - exitium  (2026-11-17)
 
 ## Corpus Check
-- 111 files · ~17,069 words
+- 112 files · ~17,230 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 8 file(s) not represented in the graph (top: .toml 4, (none) 4)
 
 ## Summary
-- 429 nodes · 395 edges · 108 communities (23 shown, 85 thin omitted)
-- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 6 edges (avg confidence: 0.85)
+- 435 nodes · 401 edges · 108 communities (23 shown, 85 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 6 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `2c824641`
+- Built from commit: `244d8bbc`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -27,7 +27,7 @@
 - Factory run
 - ADR-NNNN: <title>
 - ADR-0001: Architecture overview
-- ADR-0002: License
+- ADR-0003: MIT license and public repository
 - PROMPT.md
 - gh-app-token.sh
 - file-issue/SKILL.md
@@ -86,9 +86,9 @@
 5. `volumes` - 9 edges
 6. `run` - 8 edges
 7. `Spec: <feature>` - 8 edges
-8. `uses` - 7 edges
-9. `gate()` - 7 edges
-10. `step()` - 7 edges
+8. `gate()` - 7 edges
+9. `step()` - 7 edges
+10. `main()` - 7 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `main()` --calls--> `bench_ci()`  [EXTRACTED]
@@ -151,9 +151,9 @@ Nodes (5): ADR-NNNN: <title>, Alternatives considered, Consequences, Context, De
 Cohesion: 0.40
 Nodes (4): ADR-0001: Architecture overview, Consequences, Context, Decision
 
-### Community 11 - "ADR-0002: License"
-Cohesion: 0.40
-Nodes (4): ADR-0002: License, Consequences, Context, Decision
+### Community 11 - "ADR-0003: MIT license and public repository"
+Cohesion: 0.18
+Nodes (9): ADR-0002: License, Consequences, Context, Decision, ADR-0003: MIT license and public repository, Alternatives considered, Consequences, Context (+1 more)
 
 ### Community 12 - "PROMPT.md"
 Cohesion: 0.50
@@ -201,7 +201,7 @@ Nodes (16): GH_TOKEN, HEAD_SHA, REPO, jobs, record, name, on, pull_request_targe
 
 ## Knowledge Gaps
 - **31 isolated node(s):** `GH_TOKEN`, `exitium`, `exitium_app`, `exitium_assets`, `exitium_audio` (+26 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 284 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 287 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **85 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
@@ -218,6 +218,6 @@ _Questions this graph is uniquely positioned to answer:_
 - **Should `ci.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.12648221343873517 - nodes in this community are weakly interconnected._
 - **Why does `jobs` connect `env` to `pr-gates.yml`?**
-  _High betweenness centrality (0.003) - this node is a cross-community bridge._
+  _High betweenness centrality (0.002) - this node is a cross-community bridge._
 - **Should `jobs` be split into smaller, more focused modules?**
   _Cohesion score 0.06794871794871794 - nodes in this community are weakly interconnected._

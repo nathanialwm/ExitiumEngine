@@ -1,6 +1,6 @@
 # ADR-0002: License
 
-- Status: accepted
+- Status: superseded by ADR-0003
 - Date: 2026-11-16
 
 ## Context

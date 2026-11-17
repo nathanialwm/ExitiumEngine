@@ -96,7 +96,10 @@ pub enum Notation {
 /// `precision` digits after the point. When rounding carries a value up to
 /// the next power of a thousand, it moves to the next exponent, suffix or
 /// letter: in suffix notation `999.996` is `1.00K`, not `1000.00`, and
-/// `999_996` is `1.00M`.
+/// `999_996` is `1.00M`. Whether a value carries is decided at
+/// `small_precision`, so a larger `precision` shows more digits than the
+/// value was rounded to: with `small_precision: 2` and `precision: 5`,
+/// `999.996` is `1.00000K`.
 ///
 /// Rounding is to the nearest digit shown, ties to even, as in Rust's own
 /// float formatting. A value that rounds to zero is written without a sign,
@@ -632,7 +635,6 @@ mod tests {
         check(
             format_of(Notation::Plain, 2, 2),
             &[
-                (0.0, "0.00"),
                 (0.5, "0.50"),
                 (-0.5, "-0.50"),
                 (12.345, "12.35"), // the f64 is just above 12.345
@@ -660,7 +662,6 @@ mod tests {
         check(
             format_of(Notation::Scientific, 2, 2),
             &[
-                (0.0, "0.00"),
                 (1.0, "1.00"),
                 (-2.5, "-2.50"),
                 (999.99, "999.99"),
@@ -742,7 +743,6 @@ mod tests {
         check(
             format_of(Notation::Suffix, 2, 0),
             &[
-                (0.0, "0"),
                 (999.0, "999"),
                 (999.4, "999"),
                 (999.5, "1.00K"),
@@ -780,6 +780,40 @@ mod tests {
             format_of(Notation::Suffix, 3, 3),
             &[(999.9995, "1.000K"), (999.9994, "999.999")],
         );
+        // Rounding up to the next power of a thousand moves to the next
+        // suffix, across each tens name too.
+        check(
+            format_of(Notation::Suffix, 2, 2),
+            &[
+                (-999.996, "-1.00K"),
+                (999_999.5, "1.00M"),
+                (-999_999.5, "-1.00M"),
+                (999.996e30, "1.00Dc"),
+                (999.996e60, "1.00Vg"),
+                (999.996e300, "1.00Ce"),
+                (999.996e303, "1.00UCe"),
+            ],
+        );
+        check(
+            format_of(Notation::Suffix, 0, 0),
+            &[(999_999.5, "1M"), (-999_999.5, "-1M"), (999.996e30, "1Dc")],
+        );
+        check(
+            format_of(Notation::Suffix, 1, 1),
+            &[
+                (1234.5, "1.2K"),
+                (999_850.0, "999.8K"), // an exact tie, to even
+                (999_950.0, "1.0M"),   // an exact tie, to even
+            ],
+        );
+        check(
+            format_of(Notation::Suffix, 16, 16),
+            &[
+                (1234.5, "1.2345000000000000K"),
+                (1e6 / 3.0, "333.3333333333333139K"),
+                (f64::MAX, "179.7693134862315708UCe"),
+            ],
+        );
     }
 
     #[test]
@@ -801,6 +835,23 @@ mod tests {
                 (-2.5e81, "-2.50aa"),
             ],
         );
+        check(
+            format_of(Notation::Letter, 2, 2),
+            &[
+                (-999.996, "-1.00a"),
+                (-999_999.5, "-1.00b"),
+                (999.996e75, "1.00z"),
+                (999.996e78, "1.00aa"),
+                (-999.996e78, "-1.00aa"),
+                (999.996e153, "1.00az"),
+                (999.996e156, "1.00ba"),
+            ],
+        );
+        check(format_of(Notation::Letter, 1, 1), &[(999_950.0, "1.0b")]);
+        check(
+            format_of(Notation::Letter, 16, 16),
+            &[(f64::MAX, "179.7693134862315708cx")],
+        );
     }
 
     #[test]
@@ -813,18 +864,22 @@ mod tests {
             (28, "ab"),
             (52, "az"),
             (53, "ba"),
-            (102, "cx"),
             (702, "zz"),
             (703, "aaa"),
+            (
+                usize::MAX,
+                if usize::BITS == 64 {
+                    "gkgwbylwrxtlpo"
+                } else {
+                    "mwlqkwu"
+                },
+            ),
         ];
         for (thousands, expected) in cases {
             let mut letters = String::new();
             write_letters(thousands, &mut letters).unwrap();
             assert_eq!(letters, expected, "{thousands}");
         }
-        let mut letters = String::new();
-        write_letters(usize::MAX, &mut letters).unwrap();
-        assert_eq!(letters.len(), if usize::BITS == 64 { 14 } else { 7 });
     }
 
     #[test]
@@ -851,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_in_every_notation() {
+    fn zero_and_nan_in_every_notation() {
         // `Num::ZERO.log10()` is `MIN`, so an exponent from `log10` would
         // misplace zero. The formatter takes exponents from Rust's own float
         // formatting instead.
@@ -859,6 +914,10 @@ mod tests {
             assert_eq!(Num::ZERO.format(&format_of(notation, 2, 2)), "0.00");
             assert_eq!(Num::ZERO.format(&format_of(notation, 2, 0)), "0");
             assert_eq!(Num::from(-0.0).format(&format_of(notation, 2, 0)), "0");
+            // NaN becomes zero, so it writes as zero.
+            for nan in [f64::NAN, -f64::NAN] {
+                assert_eq!(Num::from(nan).format(&format_of(notation, 2, 2)), "0.00");
+            }
         }
     }
 
@@ -902,32 +961,95 @@ mod tests {
 
     #[test]
     fn values_below_1000_are_plain_in_every_notation() {
-        for value in samples().into_iter().filter(|value| value.abs() < 999.0) {
-            for small_precision in [0, 2, 7] {
-                let expected = format!("{value:.*}", usize::from(small_precision));
-                let shows_zero = !expected.bytes().any(|b| matches!(b, b'1'..=b'9'));
-                let expected = if shows_zero {
-                    expected.trim_start_matches('-')
-                } else {
-                    &expected
-                };
-                for notation in NOTATIONS {
-                    let format = format_of(notation, 3, small_precision);
-                    assert_eq!(
-                        Num::from(value).format(&format),
-                        expected,
-                        "{value:e} in {format:?}"
-                    );
-                }
+        // Value, small_precision and the text every notation writes.
+        let cases = [
+            (0.25, 1, "0.2"),   // an exact tie, to even
+            (0.35, 1, "0.3"),   // the f64 is just below 0.35
+            (0.005, 2, "0.01"), // the f64 is just above 0.005
+            (-0.5, 0, "0"),
+            (-1.5, 0, "-2"),
+            (123.456, 7, "123.4560000"),
+            (TINY, 7, "0.0000000"),
+            (998.5, 0, "998"), // an exact tie, to even
+            (999.0, 2, "999.00"),
+            (999.4, 0, "999"),
+            (-999.4, 0, "-999"),
+            (999.4, 2, "999.40"),
+            (999.5, 2, "999.50"),
+            (999.994, 2, "999.99"),
+            (999.9994, 3, "999.999"),
+            (999.9995, 4, "999.9995"),
+            (999.9995, 7, "999.9995000"),
+        ];
+        for (value, small_precision, text) in cases {
+            for notation in NOTATIONS {
+                let format = format_of(notation, 3, small_precision);
+                assert_eq!(
+                    Num::from(value).format(&format),
+                    text,
+                    "{value:e} in {format:?}"
+                );
             }
         }
     }
 
     #[test]
-    fn grouped_notations_round_once_at_the_right_digit() {
+    fn values_that_round_to_1000_carry_in_every_notation() {
+        // Value and small_precision; each rounds to 1000 at that precision.
+        let cases = [(999.5, 0), (999.996, 2), (999.9995, 2), (999.9995, 3)];
+        let carried = [
+            (Notation::Plain, "1000.00"),
+            (Notation::Scientific, "1.00e3"),
+            (Notation::Engineering, "1.00e3"),
+            (Notation::Suffix, "1.00K"),
+            (Notation::Letter, "1.00a"),
+        ];
+        for (value, small_precision) in cases {
+            for (notation, text) in carried {
+                let format = format_of(notation, 2, small_precision);
+                assert_eq!(
+                    Num::from(value).format(&format),
+                    text,
+                    "{value:e} in {format:?}"
+                );
+                assert_eq!(
+                    Num::from(-value).format(&format),
+                    format!("-{text}"),
+                    "{:e} in {format:?}",
+                    -value
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn small_precision_decides_whether_a_value_carries() {
+        check(
+            format_of(Notation::Suffix, 1, 3),
+            &[
+                (999.9996, "1.0K"),
+                (-999.9996, "-1.0K"),
+                (999.9994, "999.999"),
+            ],
+        );
+        // A carried value is written with `precision`, which here shows more
+        // digits than it was rounded to. The `NumFormat` docs say so.
+        let carried = [
+            (Notation::Plain, "1000.00000"),
+            (Notation::Scientific, "1.00000e3"),
+            (Notation::Engineering, "1.00000e3"),
+            (Notation::Suffix, "1.00000K"),
+            (Notation::Letter, "1.00000a"),
+        ];
+        for (notation, text) in carried {
+            assert_eq!(Num::from(999.996).format(&format_of(notation, 5, 2)), text);
+        }
+    }
+
+    /// Values of 1000 or more next to each power of ten, where rounding can
+    /// change the exponent, and the large `samples()`, each also negated.
+    fn grouped_samples() -> Vec<f64> {
         let mut values = Vec::new();
-        // The exponent changes next to each power of ten, so take every one
-        // in range, values that round up to it, and their neighbours.
         for k in 3..=308 {
             for text in [
                 format!("1e{k}"),
@@ -939,35 +1061,44 @@ mod tests {
                 values.extend([near.next_down(), near, near.next_up()]);
             }
         }
-        values.extend(samples());
         values.retain(|&value| value >= 1000.0);
-        for value in values {
-            let (digits, exp) = exact_digits(value);
-            for precision in 0..=NumFormat::MAX_PRECISION {
-                let format = format_of(Notation::Engineering, precision, 0);
-                assert_eq!(
-                    Num::from(value).format(&format),
-                    reference_engineering(&digits, exp, precision.into()),
-                    "{value:e} at precision {precision}"
-                );
-            }
-        }
+        let negated: Vec<f64> = values.iter().map(|value| -value).collect();
+        values.extend(negated);
+        // `samples()` is already negated.
+        values.extend(samples().into_iter().filter(|value| value.abs() >= 1000.0));
+        values
     }
 
     #[test]
-    fn suffix_and_letter_use_the_engineering_mantissa() {
-        for value in samples().into_iter().filter(|value| value.abs() >= 1000.0) {
-            for precision in [0, 2, 5] {
-                let num = Num::from(value);
-                let engineering = num.format(&format_of(Notation::Engineering, precision, 0));
+    fn grouped_notations_round_once_at_the_right_digit() {
+        for value in grouped_samples() {
+            let num = Num::from(value);
+            let (digits, exp) = exact_digits(value.abs());
+            let sign = if value < 0.0 { "-" } else { "" };
+            for precision in 0..=NumFormat::MAX_PRECISION {
+                let engineering = format!(
+                    "{sign}{}",
+                    reference_engineering(&digits, exp, precision.into())
+                );
                 let (mantissa, exp) = engineering.split_once('e').unwrap();
                 let thousands = exp.parse::<usize>().unwrap() / 3;
-                let suffix = num.format(&format_of(Notation::Suffix, precision, 0));
-                assert_eq!(suffix, format!("{mantissa}{}", SUFFIXES[thousands - 1]));
                 let mut letters = String::new();
                 write_letters(thousands, &mut letters).unwrap();
-                let letter = num.format(&format_of(Notation::Letter, precision, 0));
-                assert_eq!(letter, format!("{mantissa}{letters}"));
+                let expected = [
+                    (Notation::Engineering, engineering.clone()),
+                    (
+                        Notation::Suffix,
+                        format!("{mantissa}{}", SUFFIXES[thousands - 1]),
+                    ),
+                    (Notation::Letter, format!("{mantissa}{letters}")),
+                ];
+                for (notation, text) in expected {
+                    assert_eq!(
+                        num.format(&format_of(notation, precision, 0)),
+                        text,
+                        "{value:e} in {notation:?} at precision {precision}"
+                    );
+                }
             }
         }
     }
@@ -978,10 +1109,9 @@ mod tests {
         for notation in NOTATIONS {
             for value in [0.1, -2.5e-7, 1234.5678, 1e300] {
                 let num = Num::from(value);
-                assert_eq!(
-                    num.format(&format_of(notation, u8::MAX, 200)),
-                    num.format(&format_of(notation, max, max))
-                );
+                let at_max = num.format(&format_of(notation, max, max));
+                assert_eq!(num.format(&format_of(notation, max + 1, max + 1)), at_max);
+                assert_eq!(num.format(&format_of(notation, u8::MAX, 200)), at_max);
             }
         }
         let third = Num::from(1.0 / 3.0);
@@ -992,37 +1122,109 @@ mod tests {
     }
 
     #[test]
-    fn format_into_appends_and_passes_on_writer_errors() {
+    fn format_into_appends_to_the_text_already_there() {
         let mut text = String::from("gold: ");
-        Num::from(1234.5)
+        Num::from(-1234.5)
             .format_into(&NumFormat::new(Notation::Suffix), &mut text)
             .unwrap();
-        assert_eq!(text, "gold: 1.23K");
+        assert_eq!(text, "gold: -1.23K");
 
-        struct Broken;
-        impl fmt::Write for Broken {
-            fn write_str(&mut self, _: &str) -> fmt::Result {
-                Err(fmt::Error)
+        for value in samples() {
+            let num = Num::from(value);
+            for notation in NOTATIONS {
+                for (precision, small_precision) in [(0, 0), (2, 2), (1, 3), (16, 0), (5, 16)] {
+                    let format = format_of(notation, precision, small_precision);
+                    let text = num.format(&format);
+                    let mut fresh = String::new();
+                    num.format_into(&format, &mut fresh).unwrap();
+                    assert_eq!(fresh, text, "{value:e} in {format:?}");
+                    let mut label = String::from("gold: ");
+                    num.format_into(&format, &mut label).unwrap();
+                    assert_eq!(label, format!("gold: {text}"), "{value:e} in {format:?}");
+                }
             }
         }
-        for notation in NOTATIONS {
-            for value in [0.5, -0.5, 1e300, -1e300] {
-                let result = Num::from(value).format_into(&NumFormat::new(notation), &mut Broken);
-                assert_eq!(result, Err(fmt::Error));
+    }
+
+    /// A writer that fails only its `fail_at`th write, counting from 0, so an
+    /// error that is dropped instead of passed on turns into `Ok`.
+    struct FailOnce {
+        writes: usize,
+        fail_at: usize,
+    }
+
+    impl FailOnce {
+        fn at(fail_at: usize) -> Self {
+            Self { writes: 0, fail_at }
+        }
+    }
+
+    impl fmt::Write for FailOnce {
+        fn write_str(&mut self, _: &str) -> fmt::Result {
+            let this = self.writes;
+            self.writes += 1;
+            if this == self.fail_at {
+                Err(fmt::Error)
+            } else {
+                Ok(())
             }
+        }
+    }
+
+    /// Runs `write` into a writer that fails on each of its writes in turn,
+    /// and checks that every failure comes back as an error.
+    fn assert_passes_on_every_error(name: &str, write: impl Fn(&mut FailOnce) -> fmt::Result) {
+        let mut counter = FailOnce::at(usize::MAX);
+        write(&mut counter).unwrap();
+        assert!(counter.writes > 0, "{name}");
+        for fail_at in 0..counter.writes {
+            assert_eq!(
+                write(&mut FailOnce::at(fail_at)),
+                Err(fmt::Error),
+                "{name}: write {fail_at} of {}",
+                counter.writes
+            );
+        }
+    }
+
+    #[test]
+    fn writer_errors_are_passed_on() {
+        let values = [
+            0.5,
+            -0.5,
+            -0.001,
+            999.996,
+            -999.996,
+            1234.5,
+            -1234.5,
+            1e300,
+            -1e300,
+            f64::MAX,
+        ];
+        for value in values {
+            let num = Num::from(value);
+            for notation in NOTATIONS {
+                for format in [NumFormat::new(notation), format_of(notation, 0, 0)] {
+                    assert_passes_on_every_error(&format!("{value:e} in {format:?}"), |out| {
+                        num.format_into(&format, out)
+                    });
+                }
+            }
+            assert_passes_on_every_error(&format!("{value:e} in Display"), |out| {
+                write!(out, "{num}")
+            });
+            assert_passes_on_every_error(&format!("{value:e} in padded Display"), |out| {
+                write!(out, "{num:*^14}")
+            });
         }
     }
 
     #[test]
     fn display_writes_the_default_format() {
         assert_eq!(NumFormat::default(), NumFormat::DEFAULT);
-        for value in samples() {
-            let num = Num::from(value);
-            assert_eq!(num.to_string(), num.format(&NumFormat::DEFAULT));
-        }
-        assert_eq!(Num::from(1234.5).to_string(), "1.23e3");
         assert_eq!(Num::from(0.5).to_string(), "0.50");
         assert_eq!(Num::ZERO.to_string(), "0.00");
+        assert_eq!(Num::from(1e-10).to_string(), "0.00");
         assert_eq!(Num::MIN.to_string(), "-1.80e308");
     }
 
@@ -1032,61 +1234,82 @@ mod tests {
         assert_eq!(format!("{x:.0}"), "1e3");
         assert_eq!(format!("{x:.3}"), "1.234e3"); // an exact tie, to even
         assert_eq!(format!("{x:.300}"), format!("{x:.16}"));
-        assert_eq!(format!("{:.1}", Num::from(0.25)), "0.2");
+        assert_eq!(format!("{:.300}", Num::from(0.1)), "0.1000000000000000");
+        assert_eq!(format!("{:.16}", Num::from(1e-10)), "0.0000000001000000");
+        assert_eq!(format!("{x:08.1}"), "0001.2e3");
+        assert_eq!(format!("{x:3}"), "1.23e3"); // narrower than the text
         let five = Num::from(5);
         assert_eq!(format!("{:>9}", -five), "    -5.00");
         assert_eq!(format!("{five:<7}|"), "5.00   |");
         assert_eq!(format!("{five:^8}"), "  5.00  ");
+        assert_eq!(format!("{:^8}", -five), " -5.00  "); // the odd space goes after
         assert_eq!(format!("{five:*>8}"), "****5.00");
         assert_eq!(format!("{:08}", -five), "-0005.00");
+        // A `0` fill is not the `0` flag: it goes before the sign.
+        assert_eq!(format!("{five:0>8}"), "00005.00");
+        assert_eq!(format!("{:0>8}", -five), "000-5.00");
         assert_eq!(format!("{five:+}"), "+5.00");
+        assert_eq!(format!("{five:+08}"), "+0005.00");
         assert_eq!(format!("{:+}", Num::ZERO), "+0.00");
+        assert_eq!(format!("{:>12}", Num::MAX), "    1.80e308");
+        assert_eq!(format!("{:<10}|", Num::MIN), "-1.80e308 |");
         // A value that rounds to zero has no minus sign here either.
         assert_eq!(format!("{:>6}", Num::from(-0.001)), "  0.00");
+        assert_eq!(format!("{:+}", Num::from(-0.001)), "+0.00");
     }
 
     #[test]
     fn exp_formats_write_the_inner_f64() {
-        for value in samples() {
-            let num = Num::from(value);
-            let inner = num.as_f64();
-            assert_eq!(format!("{num:e}"), format!("{inner:e}"));
-            assert_eq!(format!("{num:.3E}"), format!("{inner:.3E}"));
-        }
         assert_eq!(format!("{:e}", Num::from(1500)), "1.5e3");
         assert_eq!(format!("{:E}", Num::from(1500)), "1.5E3");
+        assert_eq!(format!("{:.3E}", Num::from(123_456)), "1.235E5");
         assert_eq!(format!("{:e}", Num::ZERO), "0e0");
         assert_eq!(format!("{:e}", Num::from(-0.0)), "0e0");
+        assert_eq!(format!("{:e}", Num::MAX), "1.7976931348623157e308");
+        assert_eq!(format!("{:E}", Num::MAX), "1.7976931348623157E308");
+        assert_eq!(format!("{:e}", Num::MIN), "-1.7976931348623157e308");
+        assert_eq!(format!("{:e}", Num::from(TINY)), "5e-324");
     }
 
     #[test]
-    fn exp_text_round_trips_exactly() {
+    fn exp_and_max_precision_text_round_trip_exactly() {
+        let format = format_of(Notation::Scientific, NumFormat::MAX_PRECISION, 0);
         for value in samples() {
             let num = Num::from(value);
             assert_eq!(Num::parse(&format!("{num:e}")), Ok(num), "{value:e}");
             assert_eq!(Num::parse(&format!("{num:E}")), Ok(num), "{value:e}");
+            if value.abs() >= 1000.0 {
+                assert_eq!(Num::parse(&num.format(&format)), Ok(num), "{value:e}");
+            }
         }
     }
 
-    #[test]
-    fn scientific_at_max_precision_round_trips_exactly() {
-        let format = format_of(Notation::Scientific, NumFormat::MAX_PRECISION, 0);
-        for value in samples().into_iter().filter(|value| value.abs() >= 1000.0) {
-            let num = Num::from(value);
-            assert_eq!(Num::parse(&num.format(&format)), Ok(num), "{value:e}");
-        }
+    /// The place value of the last digit `text` shows: 10 for `12.35e3`.
+    fn last_digit_unit(text: &str) -> f64 {
+        let (mantissa, exp) = text.split_once('e').unwrap_or((text, "0"));
+        let after_point = mantissa
+            .split_once('.')
+            .map_or(0, |(_, fraction)| fraction.len());
+        10f64.powi(exp.parse::<i32>().unwrap() - after_point as i32)
     }
 
     #[test]
     fn formatted_text_reads_back_as_the_value_shown() {
-        // Parsing plain, scientific or engineering text gives a value that
-        // formats as the same text again.
+        // Parsing plain, scientific or engineering text gives a value within
+        // half a last digit of the value written (plus the f64 rounding of
+        // the parse), and that value formats as the same text again.
         for notation in [Notation::Plain, Notation::Scientific, Notation::Engineering] {
             for precision in [0, 1, 2, 3, 6] {
                 let format = format_of(notation, precision, precision);
                 for value in samples() {
                     let text = Num::from(value).format(&format);
                     let parsed = Num::parse(&text).unwrap_or_else(|_| panic!("{text:?}"));
+                    let error = (parsed.as_f64() - value).abs();
+                    let bound = 0.5 * last_digit_unit(&text) + value.abs() * f64::EPSILON;
+                    assert!(
+                        error <= bound,
+                        "{value:e} read back from {text:?} as {parsed:e}"
+                    );
                     assert_eq!(parsed.format(&format), text, "{value:e} in {format:?}");
                 }
             }
@@ -1108,6 +1331,9 @@ mod tests {
             ("1e3", 1000.0),
             ("1E3", 1000.0),
             ("1e+3", 1000.0),
+            ("1.e3", 1000.0),
+            ("-.5e-3", -0.0005),
+            ("1e007", 1e7),
             ("2.5e-3", 0.0025),
             ("1.23e45", 1.23e45),
             ("12.35e3", 12_350.0),
@@ -1118,6 +1344,10 @@ mod tests {
             assert_eq!(Num::parse(text), Ok(Num::from(value)), "{text:?}");
             assert_eq!(text.parse::<Num>(), Ok(Num::from(value)), "{text:?}");
         }
+        // A thousand digits are read and rounded once.
+        let third = format!("0.{}", "3".repeat(998));
+        assert_eq!(Num::parse(&third), Ok(Num::from(1.0 / 3.0)));
+        assert_eq!(Num::parse(&"9".repeat(1000)), Ok(Num::MAX));
     }
 
     #[test]
@@ -1125,7 +1355,15 @@ mod tests {
         assert_eq!(Num::parse("1e309"), Ok(Num::MAX));
         assert_eq!(Num::parse("1.8e308"), Ok(Num::MAX));
         assert_eq!(Num::parse("-1e999"), Ok(Num::MIN));
-        for zero in ["-0", "-0.0e5", "1e-400", "-1e-400"] {
+        assert_eq!(Num::parse("1e99999999999999999999"), Ok(Num::MAX));
+        assert_eq!(Num::parse("-1e99999999999999999999"), Ok(Num::MIN));
+        for zero in [
+            "-0",
+            "-0.0e5",
+            "1e-400",
+            "-1e-400",
+            "1e-99999999999999999999",
+        ] {
             let parsed = Num::parse(zero).unwrap();
             assert_eq!(parsed.as_f64().to_bits(), 0, "{zero:?}");
         }
@@ -1134,9 +1372,10 @@ mod tests {
     #[test]
     fn parse_rejects_other_text() {
         let invalid = [
-            "", " ", " 1", "1 ", "+", "-", ".", "e3", "1e", "1e+", "--1", "1..2", "1.2.3", "1_000",
-            "1,000", "0x10", "1.5K", "1.00a", "inf", "-inf", "infinity", "NaN", "nan", "1e3e3",
-            "\u{661}",
+            "", " ", " 1", "1 ", "\t1", "1e3\n", "1\0", "+", "-", ".", "E", "-e", "e3", "1e",
+            "1e+", "--1", "+-1", "1e+-3", "1e3.5", "1e 3", "1..2", "1.2.3", "1_000", "1,000",
+            "0x10", "1.5K", "1.5e3K", "1.00a", "inf", "+inf", "-inf", "infinity", "NaN", "-NaN",
+            "nan", "1e3e3", "\u{661}", "\u{ff11}", "\u{221e}",
         ];
         for text in invalid {
             assert_eq!(Num::parse(text), Err(ParseNumError), "{text:?}");
@@ -1146,5 +1385,11 @@ mod tests {
             ParseNumError.to_string(),
             "invalid number: expected a decimal like -1.5 or 2.5e30"
         );
+    }
+
+    #[test]
+    fn parse_error_is_a_thread_safe_std_error() {
+        fn assert_error<E: std::error::Error + Send + Sync + 'static>() {}
+        assert_error::<ParseNumError>();
     }
 }

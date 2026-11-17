@@ -12,7 +12,7 @@ This document records the answers given during the interview and my understandin
 
 **Exitium** is a 2D game engine written in Rust. Its main priority is performance. Its primary user is **an AI agent**; the human developer/designer mostly reviews, edits and cleans up what agents produce. Even so, the engine must ship a complete standalone visual editor that humans can use for all work.
 
-The repository runs as an **AI software factory**. Claude agents with defined roles take approved GitHub Issues, implement them in parallel worktrees, open PRs, review them, and auto-merge when every gate passes. The owner intervenes only at defined human gates.
+The repository runs as an **AI software factory**. Claude agents with defined roles take approved GitHub Issues, implement them in parallel worktrees, open PRs, review them, and auto-merge when every gate passes. The owner intervenes only when a PR fails two AI review rounds (ADR-0005).
 
 The first consumer is **Glutton**, an incremental roguelite in a separate repository. It is UI-heavy and uses static (non-animated) hand-drawn portraits. It has **no pixel art**. It needs cloud saves, leaderboards and server-side offline gains, and it releases a Steam demo and an itch.io build at the same time.
 
@@ -65,7 +65,7 @@ Later consumers:
 |---|---|---|
 | A1 | Main loop | Confirmed: Issue → plan → implement on a branch → PR → CI → AI review → merge → graph/docs update. |
 | A2 | Autonomy | **(b)**: auto-merge when CI is green and the AI review passes. The owner reviews only flagged PRs. |
-| A3 | Human gates (always need owner approval) | Public API changes, new dependencies, CI/factory config, save-format/serialization changes, licensing, anything touching secrets, Steam releases. |
+| A3 | Human gates (always need owner approval) | Public API changes, new dependencies, CI/factory config, save-format/serialization changes, licensing, anything touching secrets, Steam releases. Superseded by ADR-0005: the owner is involved only when a PR fails two AI review rounds. |
 | A4 | Agent roles | See the role table below. |
 | A5 | AI vendor | Claude only. |
 | A6 | Where agents run | **(b)**: on the dev machine through T3 Code with git worktrees. The Docker runners are for CI only. |
@@ -91,7 +91,7 @@ Later consumers:
 | Docs & Graph Maintainer | Sonnet 5.5, high | Keeps rustdoc, crate READMEs, MCP tool docs, ADR index and the graphify output current. |
 | Triage | Sonnet 5.5, high | Labels, deduplicates, sizes and routes issues to the right implementer specialization. |
 | Issue Approver | Sonnet 5.5, medium | Approves or rejects agent-filed issues before work starts (A9). |
-| Token Optimizer | Sonnet 5.5, high | Reviews agent transcripts and process, then improves rules, skills and prompts to raise quality and cut token use. Small, safe changes go through a PR behind the human gate (A14). **Large or unsafe changes are left as a suggestion in chat** instead of a PR. |
+| Token Optimizer | Sonnet 5.5, high | Reviews agent transcripts and process, then improves rules, skills and prompts to raise quality and cut token use. Small, safe changes go through a PR (A14; reviewed like code since ADR-0005). **Large or unsafe changes are left as a suggestion in chat** instead of a PR. |
 
 ### B. CI and infrastructure
 

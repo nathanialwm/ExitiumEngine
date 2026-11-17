@@ -68,7 +68,7 @@ Phase 0 is done by hand: me, in this session or the next few, with the owner. Fr
 Issue (owner / agent-filed)
   → [agent-filed? Issue Approver (Sonnet 5.5, medium) approves]
   → Triage: labels, size, specialization, Project placement
-  → [systems-level? Architect writes spec/ADR → owner approves]
+  → [systems-level? Architect writes spec/ADR → AI review → merge]
   → Orchestrator picks it up
       (≤3 concurrent, only if >5% session usage remains)
   → Implementer (Opus 5.5 max, specialized) in its own worktree/branch
@@ -76,7 +76,7 @@ Issue (owner / agent-filed)
   → Perf Agent runs benches when hot paths changed
   → PR opened (Conventional Commit title, linked issue)
   → CI (all jobs required) + Reviewer (Sonnet 5.5 high) posts `factory/ai-review` status
-  → human-gate check: gated paths or labels need the owner's `human-approved`
+  → human-gate check: only PRs escalated with `needs-human` (two failed review rounds) need the owner's `human-approved` (ADR-0005)
   → auto-merge (squash)
   → Docs & Graph Maintainer refreshes docs, MCP docs and the graph
   → notifications (GitHub + Claude push)
@@ -106,10 +106,12 @@ The Token Optimizer runs on a schedule, e.g. after every N merged PRs or weekly.
   - Status: `status:needs-approval`, `status:approved`, `status:in-progress`
   - Area: `area:*`
   - Role: `role:*`
-  - Gates: `gate:human`, `human-approved`
+  - Escalation: `needs-human`, `human-approved`
   - Size: `size:*`
 
 ### Human gates, enforced by the `human-gate` CI check
+
+*Superseded by ADR-0005: the only human gate is a PR that fails two AI review rounds (`needs-human`). The areas below now get extra reviewer scrutiny instead.*
 
 The check fails unless the owner has applied `human-approved` when a PR touches any of:
 
@@ -220,7 +222,7 @@ The check fails unless the owner has applied `human-approved` when a PR touches 
 3. `exitium_net` v1: transport, authoritative client/server, replication of components marked via reflection.
 4. `exitium_server`: headless runtime built for stateless, horizontal scaling.
 5. `exitium_backend`: auth, cloud saves, leaderboards, server-side offline-gain validation (reusing `exitium_sim`), external hosting/orchestration adapters, load tests.
-6. Release workflow: Steam depot upload and itch butler push, behind the human gate.
+6. Release workflow: Steam depot upload and itch butler push.
 
 **Exit:** a sample game syncs saves to the backend, posts to leaderboards, has offline gains validated by the server, and ships to both Steam (private branch) and itch.
 

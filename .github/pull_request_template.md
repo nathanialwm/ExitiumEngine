@@ -6,5 +6,5 @@ Closes #
 
 ## Verification
 
-## Gates
-<!-- none, or each human gate touched (CLAUDE.md "Human gates") and why -->
+## Risk
+<!-- none, or each high-risk area touched (CLAUDE.md "Human escalation") and why it is safe -->

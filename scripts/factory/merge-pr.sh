@@ -11,8 +11,8 @@
 # the owner can push such changes.
 #
 # Usage: scripts/factory/merge-pr.sh <pr-number>
-# Exit codes: 0 merged, 1 a check failed, 2 checks still pending (or waiting for
-# the owner's human-approved label).
+# Exit codes: 0 merged, 1 a check failed, 2 checks still pending (or a
+# needs-human PR waiting for the owner's human-approved label).
 set -euo pipefail
 
 pr="${1:?usage: merge-pr.sh <pr-number>}"

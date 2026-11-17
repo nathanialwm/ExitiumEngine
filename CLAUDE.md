@@ -20,8 +20,8 @@ Exitium is a performance-first 2D game engine in Rust. **Its primary user is an 
 ## Code rules
 
 - Stable Rust only, pinned in `rust-toolchain.toml`. Edition 2024.
-- `unsafe` is denied workspace-wide. Only designated modules may use `#[allow(unsafe_code)]`, and every `unsafe` block needs a `// SAFETY:` comment. Those modules need Miri tests. Changes to them are flagged `gate:human`.
-- New dependencies are a human gate. Prefer std or an existing workspace dependency. Declare versions once in `[workspace.dependencies]`.
+- `unsafe` is denied workspace-wide. Only designated modules may use `#[allow(unsafe_code)]`, and every `unsafe` block needs a `// SAFETY:` comment. Those modules need Miri tests, and the reviewer checks every `// SAFETY:` argument.
+- Prefer std or an existing workspace dependency. A new dependency must be justified in the PR body (license, wasm support, why not std). Declare versions once in `[workspace.dependencies]`.
 - Game-facing API goes through the `exitium` facade crate.
 - Comment density: module-level `//!` docs on every module. Comment only non-obvious logic. No narrating comments.
 
@@ -36,19 +36,11 @@ Exitium is a performance-first 2D game engine in Rust. **Its primary user is an 
 
 `cargo xtask ci all` runs the fmt, clippy, test and WASM checks exactly as CI does.
 
-## Human gates
+## Human escalation
 
-A PR needs the owner's `human-approved` label before merge if it touches any of:
+The owner is involved only when a PR fails **two AI review rounds** (ADR-0005). Every other PR merges once CI and the AI review pass. When the second round fails, the orchestrator labels the PR `needs-human`, comments a summary that @-mentions the owner, and stops work on it. The label is sticky: removing it does not lift the gate, and only the owner's `human-approved` label does. Never apply `human-approved` yourself.
 
-- public API of the `exitium` facade
-- new dependencies
-- CI or factory config (`.github/`, `.claude/`, `CLAUDE.md`, `AGENTS.md`, `xtask/`, `scripts/factory/`)
-- save or serialization formats
-- licensing
-- anything referencing secrets
-- release workflows (Steam/itch)
-
-Label such PRs `gate:human`, and say in the PR body why the gate applies. Never apply `human-approved` yourself.
+High-risk changes still get extra reviewer scrutiny, not a human gate: new dependencies, `unsafe`, the `exitium` facade API, save and serialization formats, licensing, secrets, CI and factory config, and release workflows.
 
 ## Workflow
 
@@ -75,7 +67,7 @@ Credentials live in `~/.exitium-factory/`. Never print, copy or commit them. Exc
 - **Do not start a new issue when less than 5% of session usage remains.** Finish or hand off in-flight work.
 - Agent-filed issues start as `status:needs-approval`. Only the `issue-approver` agent moves them to `status:approved`.
 - Roles and models are defined in `.claude/agents/`. Skills are in `.claude/skills/`.
-- Changes to factory rules, skills or agents are PRs behind the human gate. Large or risky process changes are suggested in chat, not PR'd.
+- Changes to factory rules, skills or agents are ordinary PRs that go through the same AI review as code. The factory App cannot push `.github/workflows/` changes, so the owner pushes those.
 
 ## graphify
 

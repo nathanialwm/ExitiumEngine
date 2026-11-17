@@ -15,7 +15,7 @@ description: Adversarially review an Exitium PR and post the verdict as the fact
    3. **Design rules:** agent parity (does each editor command have an MCP tool?), reflection as the source of truth, command bus for mutations, facade API.
    4. **Performance:** allocations in hot loops, cache-hostile layouts, needless locking, missing benchmarks on hot paths.
    5. **Scope:** unrelated changes mean changes requested. Out-of-scope ideas become follow-up issues, not blockers.
-   6. **Gates:** compare the files touched against CLAUDE.md "Human gates". If a gate applies and the PR lacks `gate:human`, add the label.
+   6. **High-risk areas:** if the PR touches an area listed in CLAUDE.md "Human escalation" (dependencies, `unsafe`, facade API, save formats, licensing, secrets, CI/factory config, releases), review it with extra scrutiny and name the areas you checked in the verdict. No human gate backs you up.
    7. **Readability:** could a basic-level Rust reviewer follow it? Are invariants documented?
 4. **Report only real findings.** Each one gets a file:line reference, the problem and a concrete fix. No style nits that rustfmt or clippy would catch. No praise padding.
 5. **Post:**

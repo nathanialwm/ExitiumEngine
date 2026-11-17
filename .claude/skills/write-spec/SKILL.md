@@ -17,5 +17,5 @@ Steps:
    - the MCP and editor surface (agent-parity rule)
 
    Give performance budgets as numbers. Keep it to the minimum needed to implement correctly.
-3. Open a PR `docs(spec): <feature>` (or `docs(adr): ...`) as the App, labelled `gate:human`, with `Refs #N`. The owner approves by merging.
-4. Once it merges, remove the `needs-spec` label from the issue.
+3. Open a PR `docs(spec): <feature>` (or `docs(adr): ...`) as the App, with `Closes #N`. It merges like any PR once the AI review passes; the owner is involved only on escalation (CLAUDE.md "Human escalation").
+4. Once it merges, remove the `needs-spec` label from the dependent issues.

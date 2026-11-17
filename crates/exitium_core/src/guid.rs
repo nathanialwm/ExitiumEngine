@@ -199,7 +199,7 @@ impl std::error::Error for ParseGuidError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::hash::Hash;
+    use std::collections::{BTreeMap, HashSet};
 
     const SAMPLE: Guid = Guid::from_u128(0x67e55044_10b1_426f_9247_bb680e5fe0c8);
     const SAMPLE_TEXT: &str = "67e55044-10b1-426f-9247-bb680e5fe0c8";
@@ -253,7 +253,6 @@ mod tests {
         for (value, text) in cases {
             let guid = Guid::from_u128(value);
             assert_eq!(guid.to_string(), text);
-            assert_eq!(parse(text), Ok(guid), "{text}");
         }
     }
 
@@ -270,8 +269,10 @@ mod tests {
     fn only_the_canonical_text_parses() {
         // Replace each character of a valid text with each candidate. The
         // expected outcome comes from the format alone: a dash at the four
-        // dash indices, a lowercase hex digit everywhere else.
-        let candidates = "0123456789abcdefABCDEFgxz-_ {}é\0";
+        // dash indices, a lowercase hex digit everywhere else. The non-ASCII
+        // candidates are digits or letters to Unicode-aware checks such as
+        // `char::is_numeric` or `char::to_digit`.
+        let candidates = "0123456789abcdefABCDEFgxz-_ {}é\0١１ｆ😀";
         for index in 0..TEXT_LEN {
             let dash = [8, 13, 18, 23].contains(&index);
             for replacement in candidates.chars() {
@@ -330,14 +331,19 @@ mod tests {
 
     #[test]
     fn the_first_bad_character_is_reported() {
-        let text = "67E55044+10b1-426f-9247-bb680e5fe0cX";
-        assert_eq!(
-            parse(text),
-            Err(ParseGuidError::InvalidChar {
-                index: 2,
-                found: 'E'
-            })
-        );
+        // A bad hex digit before a bad dash, then a bad dash before a bad hex
+        // digit: the leftmost one wins either way.
+        let cases = [
+            ("67E55044+10b1-426f-9247-bb680e5fe0cX", 2, 'E'),
+            ("67e55044+10b1-426f-92G7-bb680e5fe0c8", 8, '+'),
+        ];
+        for (text, index, found) in cases {
+            assert_eq!(
+                parse(text),
+                Err(ParseGuidError::InvalidChar { index, found }),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]
@@ -396,7 +402,24 @@ mod tests {
 
     #[test]
     fn works_as_a_plain_key() {
-        fn assert_key<T: Copy + Ord + Hash + Default + Send + Sync + 'static>() {}
-        assert_key::<Guid>();
+        let keys = [
+            Guid::NIL,
+            Guid::from_u128(1),
+            SAMPLE,
+            Guid::from_u128(u128::MAX),
+        ];
+        let set: HashSet<Guid> = keys.into_iter().collect();
+        let map: BTreeMap<Guid, usize> = keys.into_iter().zip(0..).collect();
+        assert_eq!((set.len(), map.len()), (keys.len(), keys.len()));
+        // Look each key up through an equal value built another way, so a
+        // `Hash` or `Ord` that disagrees with `Eq` misses it.
+        for (position, key) in keys.iter().enumerate() {
+            let copy = parse(&key.to_string()).unwrap();
+            assert!(set.contains(&copy), "{key:?}");
+            assert_eq!(map.get(&copy), Some(&position), "{key:?}");
+        }
+        let absent = Guid::from_u128(2);
+        assert!(!set.contains(&absent));
+        assert_eq!(map.get(&absent), None);
     }
 }

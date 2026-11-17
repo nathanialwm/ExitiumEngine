@@ -11,6 +11,10 @@ license = "MIT"
 repository = "https://github.com/nathanialwm/ExitiumEngine"
 
 [workspace.dependencies]
+# Dev-only: benchmark harness for the 5% regression gate (docs/benchmarks.md).
+# Default features off: no rayon or plotters; `cargo xtask bench-ci` only reads
+# criterion's JSON estimates.
+criterion = { version = "0.8.2", default-features = false }
 
 [workspace.lints.rust]
 # Denied by default; designated modules opt in with #[allow(unsafe_code)] (see CLAUDE.md unsafe policy).

@@ -1,17 +1,17 @@
-# Graph Report - exitium  (2026-11-17)
+# Graph Report - t3-80005842  (2026-11-17)
 
 ## Corpus Check
-- 112 files · ~17,230 words
+- 113 files · ~19,461 words
 - Verdict: corpus is large enough that graph structure adds value.
-- Unclassified: 8 file(s) not represented in the graph (top: .toml 4, (none) 4)
+- Unclassified: 9 file(s) not represented in the graph (top: (none) 5, .toml 4)
 
 ## Summary
-- 435 nodes · 401 edges · 108 communities (23 shown, 85 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 6 edges (avg confidence: 0.85)
+- 507 nodes · 546 edges · 107 communities (23 shown, 84 thin omitted)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 15 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `244d8bbc`
+- Built from commit: `9f584b5c`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -35,6 +35,7 @@
 - review-pr/SKILL.md
 - write-spec/SKILL.md
 - README.md
+- num.rs
 - exitium
 - exitium_app
 - exitium_assets
@@ -70,7 +71,6 @@
 - bug.yml
 - epic.yml
 - task.yml
-- env
 - usage-gate.py
 - CI runners
 - pull_request_template.md
@@ -79,25 +79,25 @@
 - pr-approval.yml
 
 ## God Nodes (most connected - your core abstractions)
-1. `Step-by-step plan` - 11 edges
-2. `bench_ci()` - 10 edges
-3. `Exitium Engine — Agent Guide` - 10 edges
-4. `jobs` - 9 edges
-5. `volumes` - 9 edges
-6. `run` - 8 edges
-7. `Spec: <feature>` - 8 edges
-8. `gate()` - 7 edges
-9. `step()` - 7 edges
-10. `main()` - 7 edges
+1. `Num` - 44 edges
+2. `n()` - 17 edges
+3. `Step-by-step plan` - 11 edges
+4. `bench_ci()` - 10 edges
+5. `Exitium Engine — Agent Guide` - 10 edges
+6. `jobs` - 9 edges
+7. `volumes` - 9 edges
+8. `run` - 8 edges
+9. `edges()` - 8 edges
+10. `Spec: <feature>` - 8 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `main()` --calls--> `bench_ci()`  [EXTRACTED]
   xtask/src/main.rs → xtask/src/bench.rs
 - `main()` --calls--> `compare()`  [EXTRACTED]
   xtask/src/main.rs → xtask/src/bench.rs
-- `main()` --calls--> `install_hooks()`  [EXTRACTED]
-  xtask/src/main.rs → xtask/src/git.rs
 - `main()` --calls--> `push()`  [EXTRACTED]
+  xtask/src/main.rs → xtask/src/git.rs
+- `main()` --calls--> `install_hooks()`  [EXTRACTED]
   xtask/src/main.rs → xtask/src/git.rs
 - `main()` --calls--> `step()`  [EXTRACTED]
   xtask/src/main.rs → xtask/src/ci.rs
@@ -105,7 +105,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (108 total, 85 thin omitted)
+## Communities (107 total, 84 thin omitted)
 
 ### Community 0 - "bench.rs"
 Cohesion: 0.14
@@ -159,9 +159,13 @@ Nodes (9): ADR-0002: License, Consequences, Context, Decision, ADR-0003: MIT lic
 Cohesion: 0.50
 Nodes (3): Features, The Codebase, The project
 
+### Community 41 - "num.rs"
+Cohesion: 0.05
+Nodes (29): arithmetic(), assert_canonical(), assert_close(), assign_ops_match_binary_ops(), division_by_zero(), EDGES, edges(), equal_values_hash_equally() (+21 more)
+
 ### Community 94 - "pr-gates.yml"
-Cohesion: 0.11
-Nodes (18): concurrency, cancel-in-progress, group, env, GH_TOKEN, HEAD_SHA, OWNER_LOGIN, PR (+10 more)
+Cohesion: 0.07
+Nodes (31): concurrency, cancel-in-progress, group, env, ACTION, GH_TOKEN, HEAD_SHA, LABEL (+23 more)
 
 ### Community 95 - "ci.yml"
 Cohesion: 0.13
@@ -178,10 +182,6 @@ Nodes (13): description, label, value, body, attributes, id, type, validations (
 ### Community 98 - "task.yml"
 Cohesion: 0.14
 Nodes (13): description, label, value, body, attributes, id, type, validations (+5 more)
-
-### Community 99 - "env"
-Cohesion: 0.18
-Nodes (13): ACTION, LABEL, SENDER, TITLE, runs-on, steps, jobs, human-gate (+5 more)
 
 ### Community 101 - "CI runners"
 Cohesion: 0.40
@@ -200,24 +200,24 @@ Cohesion: 0.12
 Nodes (16): GH_TOKEN, HEAD_SHA, REPO, jobs, record, name, on, pull_request_target (+8 more)
 
 ## Knowledge Gaps
-- **31 isolated node(s):** `GH_TOKEN`, `exitium`, `exitium_app`, `exitium_assets`, `exitium_audio` (+26 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 287 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **85 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **31 isolated node(s):** `exitium`, `exitium_app`, `exitium_assets`, `exitium_audio`, `exitium_backend` (+26 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 302 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **84 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `jobs` connect `jobs` to `ci.yml`?**
-  _High betweenness centrality (0.010) - this node is a cross-community bridge._
-- **What connects `GH_TOKEN`, `exitium`, `exitium_app` to the rest of the system?**
+  _High betweenness centrality (0.007) - this node is a cross-community bridge._
+- **Are the 8 inferred relationships involving `n()` (e.g. with `arithmetic()` and `division_by_zero()`) actually correct?**
+  _`n()` has 8 INFERRED edges - model-reasoned connections that need verification._
+- **What connects `exitium`, `exitium_app`, `exitium_assets` to the rest of the system?**
   _31 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `bench.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.1354679802955665 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.14285714285714285 - nodes in this community are weakly interconnected._
 - **Why does `main()` connect `ci.rs` to `bench.rs`?**
-  _High betweenness centrality (0.003) - this node is a cross-community bridge._
+  _High betweenness centrality (0.005) - this node is a cross-community bridge._
 - **Should `ci.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.12648221343873517 - nodes in this community are weakly interconnected._
-- **Why does `jobs` connect `env` to `pr-gates.yml`?**
-  _High betweenness centrality (0.002) - this node is a cross-community bridge._
 - **Should `jobs` be split into smaller, more focused modules?**
   _Cohesion score 0.06794871794871794 - nodes in this community are weakly interconnected._

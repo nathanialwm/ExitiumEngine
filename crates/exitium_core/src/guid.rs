@@ -1,9 +1,9 @@
 //! [`Guid`], a stable 128-bit id for assets and anything else that is saved.
 //!
-//! A `Guid` names the same thing across runs, files and machines, unlike an
-//! in-memory handle, which only means something inside one process. This
-//! module never generates GUIDs: `exitium_core` has no random source. The
-//! asset database mints them, and [`Guid::from_u128`] wraps a value that
+//! A `Guid` names the same thing across runs, files and machines, unlike a
+//! [`Handle`](crate::Handle), which only means something inside one process.
+//! This module never generates GUIDs: `exitium_core` has no random source.
+//! The asset database mints them, and [`Guid::from_u128`] wraps a value that
 //! already exists.
 //!
 //! # Text form

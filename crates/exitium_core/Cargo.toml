@@ -10,5 +10,12 @@ publish = false
 
 [dependencies]
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "num"
+harness = false
+
 [lints]
 workspace = true

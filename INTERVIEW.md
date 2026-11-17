@@ -76,7 +76,7 @@ Later consumers:
 | A11 | Definition of done | fmt, clippy `-D warnings`, tests, no bench regression above **5%**, WASM build, docs and MCP schema updated, graphify regenerated. |
 | A12 | Notifications | GitHub notifications and Claude (push) notifications. |
 | A13 | Memory/conventions | Root `CLAUDE.md` + per-crate `CLAUDE.md`/`AGENTS.md`, the graphify graph as the shared map, and a `docs/decisions/` ADR log. |
-| A14 | Self-improvement | Agents may edit the factory (prompts, workflows, rules, skills), **but every such change requires owner approval**. |
+| A14 | Self-improvement | Agents may edit the factory (prompts, workflows, rules, skills), **but every such change requires owner approval**. Superseded by ADR-0005: factory changes are reviewed like code; the owner is involved only after two failed review rounds. |
 
 #### Agent roster
 

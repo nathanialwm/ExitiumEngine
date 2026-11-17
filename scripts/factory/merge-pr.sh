@@ -60,6 +60,13 @@ case "$conclusion" in
   *) echo "FAILED   ci-pass ($conclusion)"; failed=1 ;;
 esac
 
+# Belt and braces for escalated PRs: don't trust a stale human-gate success if
+# the gate job lagged; require the owner's approval status on this head directly.
+labels=$(gh pr view "$pr" --repo "$repo" --json labels --jq '.labels[].name')
+if grep -qx needs-human <<< "$labels"; then
+  check_status human-approved "$actions_bot"
+fi
+
 [ "$failed" = 0 ] || exit 1
 [ "$pending" = 0 ] || exit 2
 

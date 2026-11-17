@@ -83,12 +83,12 @@ Issue (owner / agent-filed)
 ```
 
 The Token Optimizer runs on a schedule, e.g. after every N merged PRs or weekly. It reads transcripts and outcomes, then either:
-- opens gated PRs against `.claude/` rules, skills and prompts, or
+- opens PRs against `.claude/` rules, skills and prompts, or
 - for large or unsafe changes, posts a suggestion in chat instead.
 
 ### Repo artifacts
 
-- `CLAUDE.md` at the root: mission, design rules, definition of done, gate list, graphify usage. Each crate also gets its own `CLAUDE.md`/`AGENTS.md` with local invariants.
+- `CLAUDE.md` at the root: mission, design rules, definition of done, escalation rule, graphify usage. Each crate also gets its own `CLAUDE.md`/`AGENTS.md` with local invariants.
 - `.claude/agents/*.md`: one file per role, with model and effort set in frontmatter.
 - `.claude/skills/`:
   - `factory-run`: the orchestrator loop (pick issue, check usage, cap 3, spawn worktree)

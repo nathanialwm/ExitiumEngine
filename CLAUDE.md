@@ -47,7 +47,7 @@ High-risk changes still get extra reviewer scrutiny, not a human gate: new depen
 - **Branch:** `<type>/<issue#>-<slug>` (e.g. `feat/42-archetype-storage`). One issue → one branch → one worktree → one PR.
 - **Push:** `cargo xtask push`. Run `cargo xtask install-hooks` once per clone.
 - **Commits and PR titles:** Conventional Commits (`feat(ecs): ...`, `fix(render): ...`, `chore: ...`). PRs are squash-merged.
-- **PR body:** `Closes #N`, a summary, what changed, how it was verified, gates touched.
+- **PR body:** `Closes #N`, a summary, what changed, how it was verified, high-risk areas touched (the Risk section).
 - **Specs:** systems-level work needs a spec in `docs/specs/` or an ADR in `docs/decisions/`, approved before implementation. Small tasks don't.
 - **Follow-up work:** file it as an issue with the `status:needs-approval` label. Never expand the current PR's scope.
 

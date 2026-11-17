@@ -1,6 +1,6 @@
 ---
 name: write-spec
-description: Write a feature spec (docs/specs/) or architecture decision record (docs/decisions/) for systems-level Exitium work and open it as a gated PR. Used by the architect.
+description: Write a feature spec (docs/specs/) or architecture decision record (docs/decisions/) for systems-level Exitium work and open it as a PR. Used by the architect.
 ---
 
 # Write a spec or ADR

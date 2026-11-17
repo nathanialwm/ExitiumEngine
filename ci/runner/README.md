@@ -9,7 +9,7 @@ Exitium's CI runs on self-hosted runners on the owner's PC (INTERVIEW.md B15, R1
 | GitHub-hosted `macos-latest` | — | GitHub | macOS clippy and tests, only when platform or render code changed |
 | GitHub-hosted `ubuntu-latest` | — | GitHub | `pr-gates.yml` (`pr-title`, `human-gate`) |
 
-Benchmarks run only on `exitium-linux-1` (label `exitium-bench`), so they queue instead of being cancelled and never overlap each other. They still share the CPU with other CI jobs, so the gate counts only slowdowns that are both over 5% and statistically significant.
+Benchmarks run only on `exitium-linux-1` (label `exitium-bench`), so they queue instead of being cancelled and never overlap each other. They still share the CPU with other CI jobs, so the gate compares the median of many interleaved rounds and re-measures anything it flags (`docs/benchmarks.md`, The gate rule).
 
 Every runner keeps `CARGO_TARGET_DIR` outside the checkout, because `actions/checkout` deletes untracked files.
 

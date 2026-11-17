@@ -76,19 +76,96 @@ default budget. The min-spec profile runs the same benchmarks with
 # One file, while working on it:
 cargo bench -p exitium_core --bench num
 
-# The CI gate, locally: benchmarks <ref> as the baseline, then HEAD against it.
+# The CI gate, locally: benchmarks <ref> against HEAD (about 6 minutes today).
 cargo xtask bench-ci origin/main
 
-# Re-check the last results against a different threshold (percent):
+# Re-check the last bench-ci results against a different threshold (percent):
 cargo xtask bench-compare 3
 ```
 
-`bench-ci` checks out `<ref>` in a temporary worktree under `target/`, runs
-every `[[bench]]` target there, and saves the `base` baseline. Then it runs HEAD
-against it. It fails when a benchmark's mean is more than 5% slower **and** the
-slowdown is statistically significant (the lower bound of the 95% confidence
-interval is above zero). Close the IDE and other heavy programs first, or noise
-will hide real changes.
+`bench-ci` checks out `<ref>` in a temporary worktree under `target/` and builds
+both sides, each in its own cargo target dir. Then it runs every `[[bench]]`
+target in 10 short rounds per side, alternating base and HEAD (`base head head
+base base head ...`). Each round is a separate process with a 0.3 s warm-up,
+0.5 s of measurement and 10 samples per benchmark, saved as the criterion
+baseline `base-N` or `head-N` under `target/criterion/`. Uncommitted changes
+count as HEAD.
+
+## The gate rule
+
+1. **First pass.** For each benchmark, take the median of its 10 base rounds
+   and the median of its 10 HEAD rounds. Flag it when the HEAD median is more
+   than 5% slower.
+2. **Confirm pass.** Run only the flagged benchmarks again, in 20 fresh rounds
+   per side (baselines `confirm-base-N`, `confirm-head-N`). The gate fails only
+   for a benchmark that this pass flags too.
+
+The output lists every benchmark with its change in each pass and its round
+times, so you can see why it passed or failed. `noise` marks a benchmark the
+first pass flagged and the confirm pass cleared. `bench-compare` re-applies the
+rule to saved rounds without measuring again. At a lower threshold than 5% it
+has no confirm rounds for newly flagged benchmarks, so the first pass decides
+alone.
+
+### Why this rule (#82)
+
+The runners share the owner's PC with other CI jobs and agents. Two kinds of
+noise show up, and the earlier one-run-per-side gate could not handle either:
+
+- **Bursts.** A benchmark runs 1.3-3x slower for a few seconds while something
+  else compiles, on either side. One HEAD run hit by a burst read as +224%.
+- **Run-to-run spread.** One process run of the `num` add and mul benchmarks
+  can be 10% faster or slower than the next, even for the same binary, probably
+  from memory layout. A rule on the fastest round failed on one lucky base round.
+
+Interleaving spreads slow drift evenly over both sides. The median of many
+short rounds ignores anything that hits fewer than half the rounds of a side,
+in either direction. The confirm pass covers what is left: a rare false flag
+has to happen twice in a row, while a real slowdown is in every round of both
+passes.
+
+### Measured noise
+
+Identical code on both sides, change of the median HEAD round against the
+median base round, first pass:
+
+| Setup | Runs | Failed | Worst change |
+|---|---|---|---|
+| Old gate (one run per side, criterion's confidence interval), runner | 12 PR runs | 8 | -65% to +224% |
+| Fastest of 3 rounds per side, runner | 1 | 1 | +6.7% |
+| Fastest of 3 rounds per side, dev PC | 1 | 1 | +5.1% |
+| Median of 10 rounds + confirm pass, runner environment | 5 | 0 | -9.2% to +7.0% |
+| Median of 10 rounds, dev PC (Windows) | 3 | 0 | -5.6% to +2.5% |
+
+The old-gate row is the 12 PR bench jobs of 2026-11-17 before this change.
+Every benchmark they flagged was in code the PR did not touch. The
+runner-environment row is 2 CI jobs on this PR plus 3 runs inside the
+`exitium-linux-2` container (same image and host, one-off scratch clone).
+Two of those 5 runs flagged one benchmark in the first pass (`mul/100000`
++7.0%, `add/100000` +5.1%), and the confirm pass cleared both (-5.2%, +0.8%).
+
+The first-pass noise floor is about **±9% for the `num` add and mul
+benchmarks**, **±6% for `num` format** and **±3% for the profiler
+benchmarks**. A 5% regression on add or mul can sit inside that floor, so the
+gate can miss one there. It catches slowdowns of about 10% and more, and it no
+longer fails on noise.
+
+An injected slowdown (an extra pass over 10% of the elements in `num/add`
+only) failed the gate on the dev PC: `add/1000` +13.6% (confirm +10.9%) and
+`add/1000000` +7.3% (confirm +5.4%). Every `mul`, `format` and profiler
+benchmark passed. `add/100000` read +3.6%: the extra elements were still in
+cache, so the injected cost there was below 5%.
+
+### How much to trust local results
+
+Local `bench-ci` uses the same rule and, on the dev PC, showed less noise
+than the runner (table above), so a local pass or fail is about as
+trustworthy as CI's. On a busy machine expect `noise` lines and a confirm
+pass. A first-pass change under about 10% on the `num` add and mul benchmarks
+can be noise in either direction: only the confirmed result counts. For a
+benchmark that sits near 5%, rerun `bench-ci` or raise the rounds with
+`EXITIUM_BENCH_ROUNDS=20` (the confirm pass doubles it).
 
 CI runs `bench-ci` against the PR's base commit on the dedicated
-`exitium-bench` runner, one PR at a time.
+`exitium-bench` runner, one PR at a time. The job takes about 5 minutes, plus
+about a minute when the confirm pass runs. Each new benchmark adds about 20 s.

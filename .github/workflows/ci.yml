@@ -65,11 +65,9 @@ jobs:
 
   bench:
     if: github.event_name == 'pull_request'
-    runs-on: [self-hosted, exitium-linux]
-    # One benchmark run at a time on this machine, so runs don't skew each other.
-    concurrency:
-      group: bench
-      cancel-in-progress: false
+    # Only exitium-linux-1 carries this label, so benchmarks queue (never cancel)
+    # and run one at a time.
+    runs-on: [self-hosted, exitium-bench]
     steps:
       - uses: actions/checkout@v5
         with:

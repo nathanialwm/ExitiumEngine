@@ -16,8 +16,11 @@ services:
     environment:
       <<: *runner-env
       RUNNER_NAME: exitium-linux-1
+      # Benchmarks run only here, one at a time, so results stay comparable.
+      RUNNER_LABELS: exitium-linux,exitium-bench
     volumes:
       - linux-1-state:/state
+      - linux-1-target:/home/runner/target
       - linux-1-work:/home/runner/actions-runner/_work
       - linux-1-cargo:/home/runner/.cargo/registry
   linux-2:
@@ -27,6 +30,7 @@ services:
       RUNNER_NAME: exitium-linux-2
     volumes:
       - linux-2-state:/state
+      - linux-2-target:/home/runner/target
       - linux-2-work:/home/runner/actions-runner/_work
       - linux-2-cargo:/home/runner/.cargo/registry
 
@@ -34,6 +38,8 @@ volumes:
   linux-1-state:
   linux-1-work:
   linux-1-cargo:
+  linux-1-target:
   linux-2-state:
   linux-2-work:
   linux-2-cargo:
+  linux-2-target:

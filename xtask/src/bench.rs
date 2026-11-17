@@ -47,9 +47,11 @@ pub fn bench_ci(args: &[String]) -> Result<(), String> {
         ],
     )?;
     // A base without benchmarks just leaves nothing to compare against.
-    let base = match has_bench_targets(&worktree) {
+    let base_has_benches = has_bench_targets(&worktree);
+    let base = match base_has_benches {
         Ok(true) => cargo_bench(&worktree, &target_dir, &["--save-baseline", "base"]),
-        other => other.map(|_| ()),
+        Ok(false) => Ok(()),
+        Err(ref e) => Err(e.clone()),
     };
     let _ = Command::new("git")
         .args(["worktree", "remove", "--force"])
@@ -58,7 +60,13 @@ pub fn bench_ci(args: &[String]) -> Result<(), String> {
     base?;
 
     cargo_bench(Path::new("."), &target_dir, &["--baseline-lenient", "base"])?;
-    compare(&[])
+    // Both sides ran benchmarks, so an empty comparison means something broke.
+    let require_comparisons = base_has_benches == Ok(true);
+    gate(
+        &criterion_dir,
+        DEFAULT_THRESHOLD_PERCENT,
+        require_comparisons,
+    )
 }
 
 pub fn compare(args: &[String]) -> Result<(), String> {
@@ -68,10 +76,18 @@ pub fn compare(args: &[String]) -> Result<(), String> {
             .map_err(|_| format!("threshold must be a number, got {value:?}"))?,
         None => DEFAULT_THRESHOLD_PERCENT,
     };
-    let criterion_dir = target_dir()?.join("criterion");
+    gate(&target_dir()?.join("criterion"), threshold, false)
+}
+
+fn gate(criterion_dir: &Path, threshold: f64, require_comparisons: bool) -> Result<(), String> {
     let mut changes = Vec::new();
-    collect_changes(&criterion_dir, &criterion_dir, &mut changes);
+    collect_changes(criterion_dir, criterion_dir, &mut changes)?;
     if changes.is_empty() {
+        if require_comparisons {
+            return Err(
+                "base and HEAD both have benchmarks, but no comparisons were produced".into(),
+            );
+        }
         println!("bench-compare: no benchmark comparisons found; nothing to gate");
         return Ok(());
     }
@@ -79,13 +95,12 @@ pub fn compare(args: &[String]) -> Result<(), String> {
 
     let mut regressions = 0;
     for change in &changes {
-        let percent = change.mean * 100.0;
-        let regressed = percent > threshold && change.lower_bound > 0.0;
+        let regressed = is_regression(change, threshold);
         if regressed {
             regressions += 1;
         }
         let flag = if regressed { "REGRESSION" } else { "ok" };
-        println!("{flag:>10}  {percent:+7.2}%  {}", change.name);
+        println!("{flag:>10}  {:+7.2}%  {}", change.mean * 100.0, change.name);
     }
     if regressions > 0 {
         Err(format!(
@@ -99,15 +114,23 @@ pub fn compare(args: &[String]) -> Result<(), String> {
 
 /// One benchmark's relative change against the baseline, as fractions
 /// (0.05 = 5% slower).
+#[derive(Debug)]
 struct Change {
     name: String,
     mean: f64,
     lower_bound: f64,
 }
 
-fn collect_changes(root: &Path, dir: &Path, out: &mut Vec<Change>) {
+/// Slower than the threshold *and* statistically significant. A slowdown whose
+/// confidence interval includes zero is treated as noise: runners share one
+/// machine, and a false failure blocks the whole factory.
+fn is_regression(change: &Change, threshold_percent: f64) -> bool {
+    change.mean * 100.0 > threshold_percent && change.lower_bound > 0.0
+}
+
+fn collect_changes(root: &Path, dir: &Path, out: &mut Vec<Change>) -> Result<(), String> {
     let Ok(entries) = fs::read_dir(dir) else {
-        return;
+        return Ok(());
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -116,25 +139,26 @@ fn collect_changes(root: &Path, dir: &Path, out: &mut Vec<Change>) {
         }
         let estimates = path.join("estimates.json");
         if path.ends_with("change") && estimates.is_file() {
-            let parsed = fs::read_to_string(&estimates)
+            let parent = path.parent().unwrap_or(&path);
+            let name = parent
+                .strip_prefix(root)
+                .unwrap_or(parent)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let (mean, lower_bound) = fs::read_to_string(&estimates)
                 .ok()
-                .and_then(|json| parse_mean_change(&json));
-            if let (Some((mean, lower_bound)), Some(parent)) = (parsed, path.parent()) {
-                let name = parent
-                    .strip_prefix(root)
-                    .unwrap_or(parent)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                out.push(Change {
-                    name,
-                    mean,
-                    lower_bound,
-                });
-            }
+                .and_then(|json| parse_mean_change(&json))
+                .ok_or_else(|| format!("unreadable criterion estimates for {name}"))?;
+            out.push(Change {
+                name,
+                mean,
+                lower_bound,
+            });
         } else {
-            collect_changes(root, &path, out);
+            collect_changes(root, &path, out)?;
         }
     }
+    Ok(())
 }
 
 /// Extracts `mean.point_estimate` and `mean.confidence_interval.lower_bound`
@@ -215,6 +239,43 @@ mod tests {
     #[test]
     fn rejects_json_without_mean() {
         assert_eq!(parse_mean_change(r#"{"median":{}}"#), None);
+    }
+
+    fn change(mean: f64, lower_bound: f64) -> Change {
+        Change {
+            name: "b".into(),
+            mean,
+            lower_bound,
+        }
+    }
+
+    #[test]
+    fn regression_needs_threshold_and_significance() {
+        assert!(is_regression(&change(0.074, 0.061), 5.0));
+        assert!(!is_regression(&change(0.04, 0.01), 5.0), "under threshold");
+        assert!(
+            !is_regression(&change(0.08, -0.01), 5.0),
+            "interval spans zero"
+        );
+        assert!(!is_regression(&change(-0.2, -0.3), 5.0), "faster");
+    }
+
+    #[test]
+    fn gate_fails_on_unparseable_estimates() {
+        let dir = std::env::temp_dir().join(format!("xtask-bench-{}", std::process::id()));
+        let change_dir = dir.join("group/bench/change");
+        fs::create_dir_all(&change_dir).unwrap();
+        fs::write(change_dir.join("estimates.json"), "{}").unwrap();
+        let result = gate(&dir, 5.0, false);
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn gate_requires_comparisons_when_asked() {
+        let empty = std::env::temp_dir().join("xtask-bench-missing-dir");
+        assert!(gate(&empty, 5.0, false).is_ok());
+        assert!(gate(&empty, 5.0, true).is_err());
     }
 
     #[test]

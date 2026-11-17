@@ -25,7 +25,12 @@ pub fn step(args: &[String]) -> Result<(), String> {
         Some("miri") => miri(),
         // `all` is the local definition-of-done run; deny and miri need extra
         // tools and run in CI only.
-        Some("all") => fmt().and(clippy()).and(test()).and(wasm()),
+        Some("all") => {
+            fmt()?;
+            clippy()?;
+            test()?;
+            wasm()
+        }
         other => Err(format!(
             "unknown ci step {other:?}; expected fmt | clippy | test | wasm | deny | miri | all"
         )),

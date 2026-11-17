@@ -5,6 +5,16 @@
 # Installed by `cargo xtask install-hooks`.
 set -euo pipefail
 
+# Git passes one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+# Only branch pushes refresh the graph; deletions and tags are left alone.
+pushes_branch=false
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+  if [[ "$local_ref" == refs/heads/* && ! "$local_sha" =~ ^0+$ ]]; then
+    pushes_branch=true
+  fi
+done
+$pushes_branch || exit 0
+
 if ! command -v graphify >/dev/null 2>&1; then
   echo "pre-push: graphify not installed; skipping graph refresh" >&2
   exit 0
@@ -25,7 +35,8 @@ if git diff --quiet -I 'Built from commit' -I '^# Graph Report' -- "${graph_file
   exit 0
 fi
 
+# Commit only the graph files, never anything else the agent had staged.
 git add -- "${graph_files[@]}"
-git commit --quiet --no-verify -m "chore(graph): refresh"
+git commit --quiet --no-verify -m "chore(graph): refresh" -- "${graph_files[@]}"
 echo "pre-push: graph updated, push again (cargo xtask push retries automatically)" >&2
 exit 1

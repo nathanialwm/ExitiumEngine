@@ -4,9 +4,16 @@ Exitium's CI runs on self-hosted runners on the owner's PC (INTERVIEW.md B15, R1
 
 | Runner | Label | Where | Jobs |
 |---|---|---|---|
-| `exitium-linux-1`, `exitium-linux-2` | `exitium-linux` | Docker (Linux containers via WSL2) | fmt, clippy, tests, WASM, cargo-deny, Miri, benchmarks, PR gates |
+| `exitium-linux-1`, `exitium-linux-2` | `exitium-linux` | Docker (Linux containers via WSL2) | fmt, clippy, tests, WASM, cargo-deny, Miri, benchmarks |
 | `exitium-windows-1` | `exitium-windows` | Native Windows host (Home edition cannot run Windows containers) | Windows clippy and tests |
 | GitHub-hosted `macos-latest` | — | GitHub | macOS clippy and tests, only when platform or render code changed |
+| GitHub-hosted `ubuntu-latest` | — | GitHub | `pr-gates.yml` (`pr-title`, `human-gate`) |
+
+Benchmarks run only on `exitium-linux-1` (label `exitium-bench`), so they queue instead of being cancelled and never overlap each other. They still share the CPU with other CI jobs, so the gate counts only slowdowns that are both over 5% and statistically significant.
+
+Every runner keeps `CARGO_TARGET_DIR` outside the checkout, because `actions/checkout` deletes untracked files.
+
+**Trust model.** These runners execute PR code on the owner's PC, and the Windows runner runs as the owner's account. That is no wider than the agents themselves, which already run on this machine as the owner (INTERVIEW.md A6). The PR gates (`pr-gates.yml`) hold a write token, so they run on GitHub-hosted runners and never here.
 
 Windows builds are checked natively rather than cross-compiled with `cargo-xwin`, so the Linux image does not carry the MSVC SDK.
 

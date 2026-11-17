@@ -2,18 +2,22 @@
 #   pr-title    the title is a Conventional Commit (it becomes the squash commit).
 #   human-gate  PRs touching a human-gate area (CLAUDE.md "Human gates") need the
 #               `human-approved` label, applied by the owner, after the latest push.
+#               While waiting for the owner the status is `pending`, not `failure`.
 #
 # Uses pull_request_target so the gate logic always comes from `main`: a PR cannot
-# weaken its own gate. No PR code is checked out or run here.
+# weaken its own gate. No PR code is checked out or run here, and the jobs run on
+# GitHub-hosted runners, never on the self-hosted ones that execute PR code.
 name: pr-gates
 
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, edited, labeled, unlabeled, ready_for_review]
 
+# No cancel-in-progress: a later event must not cancel the run that revokes an
+# approval after a push.
 concurrency:
   group: pr-gates-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -30,7 +34,7 @@ env:
 
 jobs:
   pr-title:
-    runs-on: [self-hosted, exitium-linux]
+    runs-on: ubuntu-latest
     steps:
       - env:
           TITLE: ${{ github.event.pull_request.title }}
@@ -45,13 +49,15 @@ jobs:
           [ "$state" = success ]
 
   human-gate:
-    runs-on: [self-hosted, exitium-linux]
+    runs-on: ubuntu-latest
     steps:
       - env:
           ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
           status() { gh api "repos/$REPO/statuses/$HEAD_SHA" -f state="$1" -f context=human-gate -f description="$2" > /dev/null; }
+          # Paginated arrays are merged with `jq -s add`. Outputs are captured into variables before grepping them, so an early
+          # exit from grep can't kill a pipeline with SIGPIPE under pipefail.
 
           # Approval covers the commits it was given on. A new push revokes it.
           labels=$(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name')
@@ -61,27 +67,32 @@ jobs:
           fi
 
           reasons=()
-          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
-          gate_paths='^(\.github/|\.claude/|CLAUDE\.md$|AGENTS\.md$|xtask/|scripts/factory/|scripts/hooks/|ci/|deny\.toml$|LICENSE|docs/decisions/0002-|Cargo\.toml$|rust-toolchain\.toml$|crates/exitium/src/|crates/exitium_serial/|crates/exitium_save/|crates/exitium_steam/)'
-          if hits=$(grep -E "$gate_paths" <<< "$files"); then
+          pr_files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" | jq -s add)
+          # Renames count on both sides, so moving a file out of a gated path is caught.
+          names=$(jq -r '.[] | .filename, (.previous_filename // empty)' <<< "$pr_files")
+          gate_paths='^(\.github/|\.claude/|\.cargo/|\.config/|CLAUDE\.md$|AGENTS\.md$|xtask/|scripts/|ci/|deny\.toml$|rustfmt\.toml$|clippy\.toml$|\.gitattributes$|LICENSE|docs/decisions/0002-|Cargo\.toml$|rust-toolchain\.toml$|crates/exitium/src/|crates/exitium_serial/|crates/exitium_save/|crates/exitium_steam/)'
+          if hits=$(grep -E "$gate_paths" <<< "$names"); then
             reasons+=("gated paths: $(head -5 <<< "$hits" | paste -sd ' ')")
           fi
 
           # New external dependencies appear as added `source = ` lines in Cargo.lock.
-          patches=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | select(.filename == "Cargo.lock") | .patch // "TRUNCATED"')
-          if grep -qE '^\+source = |^TRUNCATED$' <<< "$patches"; then
+          lock_patch=$(jq -r '.[] | select(.filename == "Cargo.lock") | .patch // "TRUNCATED"' <<< "$pr_files")
+          if grep -qE '^\+source = |^TRUNCATED$' <<< "$lock_patch"; then
             reasons+=("new dependencies in Cargo.lock")
           fi
 
-          added=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].patch // ""' | grep -E '^\+' || true)
+          added=$(jq -r '.[].patch // ""' <<< "$pr_files" | grep -E '^\+' || true)
           if grep -qiE 'secrets\.|private[-_]key|credentials\.json|api[-_]?key' <<< "$added"; then
             reasons+=("references secrets")
           fi
+          rust_added=$(jq -r '.[] | select(.filename | endswith(".rs")) | .patch // ""' <<< "$pr_files" | grep -E '^\+' || true)
+          if grep -qE '\bunsafe\b|allow\(unsafe_code\)' <<< "$rust_added"; then
+            reasons+=("adds unsafe code")
+          fi
 
           # A gate:human label is sticky: once applied, removing it does not lift the gate.
-          ever_gated=$(gh api --paginate "repos/$REPO/issues/$PR/timeline" \
-            --jq '.[] | select(.event == "labeled" and .label.name == "gate:human") | .label.name' | head -1)
-          if [ -n "$ever_gated" ]; then
+          timeline=$(gh api --paginate "repos/$REPO/issues/$PR/timeline" | jq -s add)
+          if jq -e 'any(.[]; .event == "labeled" and .label.name == "gate:human")' <<< "$timeline" > /dev/null; then
             reasons+=("labelled gate:human")
           fi
 
@@ -92,8 +103,7 @@ jobs:
           printf 'gate applies: %s\n' "${reasons[@]}"
           grep -qx gate:human <<< "$labels" || gh api "repos/$REPO/issues/$PR/labels" -f "labels[]=gate:human" > /dev/null
 
-          approver=$(gh api --paginate "repos/$REPO/issues/$PR/timeline" \
-            --jq '.[] | select(.event == "labeled" and .label.name == "human-approved") | .actor.login' | tail -1)
+          approver=$(jq -r '[.[] | select(.event == "labeled" and .label.name == "human-approved") | .actor.login] | last // ""' <<< "$timeline")
           if grep -qx human-approved <<< "$labels" && [ "$approver" = "$OWNER_LOGIN" ]; then
             status success "Approved by $OWNER_LOGIN"
             exit 0
@@ -101,9 +111,9 @@ jobs:
 
           # Ping the owner once per PR so a GitHub notification goes out.
           marker='<!-- human-gate -->'
-          if ! gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[].body' | grep -qF "$marker"; then
+          comments=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[].body')
+          if ! grep -qF "$marker" <<< "$comments"; then
             body=$(printf '%s\n@%s this PR needs the `human-approved` label before merge.\n\n' "$marker" "$OWNER_LOGIN"; printf -- '- %s\n' "${reasons[@]}")
             gh api "repos/$REPO/issues/$PR/comments" -f body="$body" > /dev/null
           fi
-          status failure "Needs human-approved from $OWNER_LOGIN"
-          exit 1
+          status pending "Waiting for human-approved from $OWNER_LOGIN"

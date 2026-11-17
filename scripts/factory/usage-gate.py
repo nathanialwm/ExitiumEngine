@@ -66,4 +66,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:  # an unexpected crash must read as "unknown", not "blocked"
+        unknown(f"unexpected {type(error).__name__}")

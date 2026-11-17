@@ -34,6 +34,10 @@ if (-not (Test-Path "$Dir\.runner")) {
     if ($LASTEXITCODE -ne 0) { throw "runner configuration failed" }
 }
 
+# Keep build output outside the checkout: actions/checkout cleans untracked files,
+# which would delete an in-tree target/ on every job. The runner reads .env.
+Set-Content -Path "$Dir\.env" -Value "CARGO_TARGET_DIR=$Dir\target" -Encoding ascii
+
 $taskName = "ExitiumActionsRunner"
 $action = New-ScheduledTaskAction -Execute "$Dir\run.cmd" -WorkingDirectory $Dir
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME

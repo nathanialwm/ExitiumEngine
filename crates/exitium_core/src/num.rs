@@ -45,17 +45,30 @@
 //! assert_eq!(Num::ONE / Num::ZERO, Num::MAX);
 //! assert!(Num::from(-1.0) < Num::ZERO);
 //! ```
+//!
+//! # Text
+//!
+//! [`Num::format`] writes a value as a [`NumFormat`] says: in plain,
+//! scientific, engineering, suffix (`1.23K`) or letter (`1.23a`) notation,
+//! with a chosen number of digits after the point. `Display` writes
+//! [`NumFormat::DEFAULT`], such as `1.23e3`. [`Num::parse`] reads plain and
+//! scientific text back.
 
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::iter::{Product, Sum};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
+mod format;
+
+pub use format::{Notation, NumFormat, ParseNumError};
+
 /// The engine's number type: an `f64` that is always finite.
 ///
 /// Build one with [`Num::from_f64`], or `Num::from` on an `f64`, `i32`,
-/// `u32`, `i64` or `u64`. Arithmetic saturates instead of overflowing and
-/// never produces NaN; the [module docs](crate::num) give the exact policy.
+/// `u32`, `i64` or `u64`, or read one from text with [`Num::parse`].
+/// Arithmetic saturates instead of overflowing and never produces NaN; the
+/// [module docs](crate::num) give the exact policy.
 // Invariant: the f64 is finite and not -0.0. Only `from_f64`, the constants
 // and the derived `Default` (0.0) build a `Num`, and the `Eq`, `Ord` and
 // `Hash` impls rely on it.

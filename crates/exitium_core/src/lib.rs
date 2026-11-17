@@ -12,6 +12,6 @@ pub use error::{Error, Result};
 pub use guid::{Guid, ParseGuidError};
 pub use handle::{Handle, RawHandle};
 pub use math::{Color, ParseColorError, Rect};
-pub use num::Num;
+pub use num::{Notation, Num, NumFormat, ParseNumError};
 pub use slab::Slab;
 pub use time::{Advance, FixedClock, Time};

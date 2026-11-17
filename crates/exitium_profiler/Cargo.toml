@@ -8,7 +8,20 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Off by default: without it `profile_scope!` expands to nothing and `tracing`
+# is not compiled at all.
+profiling = ["dep:tracing"]
+
 [dependencies]
+tracing = { workspace = true, optional = true, features = ["std"] }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "scope"
+harness = false
 
 [lints]
 workspace = true

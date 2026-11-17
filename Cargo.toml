@@ -20,6 +20,10 @@ criterion = { version = "0.8.2", default-features = false }
 # features off: `std` plus only the scalar types the engine uses (`f32` is
 # always built; `f64` for `DVec2`, `i32`/`u32` for `IVec*`/`UVec*`), not all ten.
 glam = { version = "0.34.3", default-features = false, features = ["std", "f64", "i32", "u32"] }
+# Span instrumentation behind exitium_profiler's `profiling` feature. Default
+# features off: `attributes` pulls in a proc macro (syn) we do not use; crates
+# opt into `std` themselves.
+tracing = { version = "0.1.44", default-features = false }
 
 [workspace.lints.rust]
 # Denied by default; designated modules opt in with #[allow(unsafe_code)] (see CLAUDE.md unsafe policy).

@@ -57,7 +57,9 @@ pub mod __private {
 /// docs). The span's level (`INFO`) and target (`exitium`) are fixed so one
 /// filter selects all engine spans.
 ///
-/// With the `profiling` feature off this expands to nothing.
+/// With the `profiling` feature off this expands to nothing. With it on, the
+/// scope guard is `!Send`, so do not hold a scope across `.await` in code that
+/// must be `Send`: it compiles with the feature off and fails with it on.
 ///
 /// ```
 /// use exitium_profiler::profile_scope;
@@ -67,6 +69,23 @@ pub mod __private {
 ///     42
 /// }
 /// assert_eq!(update(), 42);
+/// ```
+///
+/// The macro is a statement, not an expression:
+///
+/// ```compile_fail
+/// use exitium_profiler::profile_scope;
+///
+/// let _guard = profile_scope!("exitium_sim::update");
+/// ```
+///
+/// and the name must be a literal:
+///
+/// ```compile_fail
+/// use exitium_profiler::profile_scope;
+///
+/// let name = "exitium_sim::update";
+/// profile_scope!(name);
 /// ```
 #[cfg(feature = "profiling")]
 #[macro_export]
@@ -86,6 +105,8 @@ macro_rules! profile_scope {
 /// Profiles the rest of the enclosing block as a span named `$name`.
 ///
 /// The `profiling` feature is off in this build, so this expands to nothing.
+/// With it on, the scope guard is `!Send`, so do not hold a scope across
+/// `.await` in code that must be `Send`.
 #[cfg(not(feature = "profiling"))]
 #[macro_export]
 macro_rules! profile_scope {
@@ -94,36 +115,27 @@ macro_rules! profile_scope {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn enabled_matches_feature() {
-        assert_eq!(super::ENABLED, cfg!(feature = "profiling"));
-    }
-
-    /// A `const fn` cannot create a span, so this only compiles if the macro
-    /// expands to nothing.
+    /// A `const fn` cannot create a span, so this only compiles if every scope
+    /// (in a loop, nested, and as siblings in one block) expands to nothing.
     #[cfg(not(feature = "profiling"))]
     #[test]
-    fn disabled_scope_expands_to_nothing() {
-        const fn scoped() -> u32 {
-            profile_scope!("exitium_profiler::tests::scoped");
-            7
-        }
-        const VALUE: u32 = scoped();
-        assert_eq!(VALUE, 7);
-    }
-
-    #[cfg(not(feature = "profiling"))]
-    #[test]
-    fn disabled_scope_heavy_loop_runs() {
-        let mut sum = 0u64;
-        for i in 0..10_000u64 {
-            profile_scope!("exitium_profiler::tests::outer");
-            {
-                profile_scope!("exitium_profiler::tests::inner");
-                sum += i;
+    fn disabled_scopes_expand_to_nothing() {
+        const fn scoped(n: u32) -> u32 {
+            let mut sum = 0;
+            let mut i = 0;
+            while i < n {
+                profile_scope!("exitium_profiler::tests::outer");
+                profile_scope!("exitium_profiler::tests::sibling");
+                {
+                    profile_scope!("exitium_profiler::tests::inner");
+                    sum += i;
+                }
+                i += 1;
             }
+            sum
         }
-        assert_eq!(sum, 49_995_000);
+        const SUM: u32 = scoped(10_000);
+        assert_eq!(SUM, 49_995_000);
     }
 
     #[cfg(feature = "profiling")]
@@ -135,7 +147,7 @@ mod tests {
         use tracing::{Event, Level, Metadata, Subscriber};
 
         /// What the collector saw, in order.
-        #[derive(Debug, PartialEq)]
+        #[derive(Clone, Debug, PartialEq)]
         enum Seen {
             New {
                 name: &'static str,
@@ -150,14 +162,32 @@ mod tests {
         /// are indexes (plus one, since 0 is invalid) into `names`.
         #[derive(Clone, Default)]
         struct Collector {
+            /// When set, only spans with this target are enabled.
+            target: Option<&'static str>,
             names: Arc<Mutex<Vec<&'static str>>>,
             seen: Arc<Mutex<Vec<Seen>>>,
         }
 
         impl Collector {
+            fn only(target: &'static str) -> Self {
+                Self {
+                    target: Some(target),
+                    ..Self::default()
+                }
+            }
+
             fn name(&self, id: &Id) -> &'static str {
                 let index = usize::try_from(id.into_u64() - 1).expect("span id fits usize");
                 self.names.lock().unwrap()[index]
+            }
+
+            /// Runs `f` with this collector as the thread's subscriber.
+            fn run<T>(&self, f: impl FnOnce() -> T) -> T {
+                tracing::subscriber::with_default(self.clone(), f)
+            }
+
+            fn assert_seen(&self, expected: &[Seen]) {
+                assert_eq!(*self.seen.lock().unwrap(), expected);
             }
         }
 
@@ -168,8 +198,8 @@ mod tests {
                 Interest::sometimes()
             }
 
-            fn enabled(&self, _: &Metadata<'_>) -> bool {
-                true
+            fn enabled(&self, meta: &Metadata<'_>) -> bool {
+                self.target.is_none_or(|target| meta.target() == target)
             }
 
             fn new_span(&self, attrs: &Attributes<'_>) -> Id {
@@ -209,28 +239,64 @@ mod tests {
             }
         }
 
+        /// The full lifecycle of one span with no children.
+        fn whole(name: &'static str) -> [Seen; 3] {
+            [new(name), Seen::Enter(name), Seen::Exit(name)]
+        }
+
         #[test]
         fn nested_scopes_are_recorded_in_order() {
             let collector = Collector::default();
-            tracing::subscriber::with_default(collector.clone(), || {
+            collector.run(|| {
                 profile_scope!("exitium_profiler::outer");
                 {
                     profile_scope!("exitium_profiler::inner");
                 }
             });
 
-            let seen = collector.seen.lock().unwrap();
-            assert_eq!(
-                *seen,
-                [
-                    new("exitium_profiler::outer"),
-                    Seen::Enter("exitium_profiler::outer"),
-                    new("exitium_profiler::inner"),
-                    Seen::Enter("exitium_profiler::inner"),
-                    Seen::Exit("exitium_profiler::inner"),
-                    Seen::Exit("exitium_profiler::outer"),
-                ]
-            );
+            collector.assert_seen(&[
+                new("exitium_profiler::outer"),
+                Seen::Enter("exitium_profiler::outer"),
+                new("exitium_profiler::inner"),
+                Seen::Enter("exitium_profiler::inner"),
+                Seen::Exit("exitium_profiler::inner"),
+                Seen::Exit("exitium_profiler::outer"),
+            ]);
+        }
+
+        /// The second guard must not drop the first: both live to the end of
+        /// the block and exit in reverse order.
+        #[test]
+        fn sibling_scopes_exit_in_reverse_order() {
+            let collector = Collector::default();
+            collector.run(|| {
+                profile_scope!("exitium_profiler::first");
+                profile_scope!("exitium_profiler::second");
+            });
+
+            collector.assert_seen(&[
+                new("exitium_profiler::first"),
+                Seen::Enter("exitium_profiler::first"),
+                new("exitium_profiler::second"),
+                Seen::Enter("exitium_profiler::second"),
+                Seen::Exit("exitium_profiler::second"),
+                Seen::Exit("exitium_profiler::first"),
+            ]);
+        }
+
+        #[test]
+        fn scope_ends_with_its_block() {
+            let collector = Collector::default();
+            collector.run(|| {
+                {
+                    profile_scope!("exitium_profiler::block");
+                }
+                profile_scope!("exitium_profiler::after");
+            });
+
+            let mut expected = Vec::from(whole("exitium_profiler::block"));
+            expected.extend(whole("exitium_profiler::after"));
+            collector.assert_seen(&expected);
         }
 
         #[test]
@@ -244,39 +310,113 @@ mod tests {
             }
 
             let collector = Collector::default();
-            let result = tracing::subscriber::with_default(collector.clone(), || early(true));
-
-            assert_eq!(result, 1);
-            let seen = collector.seen.lock().unwrap();
-            assert_eq!(
-                *seen,
-                [
-                    new("exitium_profiler::early"),
-                    Seen::Enter("exitium_profiler::early"),
-                    Seen::Exit("exitium_profiler::early"),
-                ]
-            );
+            assert_eq!(collector.run(|| early(true)), 1);
+            collector.assert_seen(&whole("exitium_profiler::early"));
         }
 
         #[test]
-        fn scope_in_loop_records_every_iteration() {
+        fn scope_exits_on_question_mark() {
+            fn parse(input: &str) -> Result<u32, std::num::ParseIntError> {
+                profile_scope!("exitium_profiler::parse");
+                let value: u32 = input.parse()?;
+                Ok(value + 1)
+            }
+
             let collector = Collector::default();
-            tracing::subscriber::with_default(collector.clone(), || {
-                for _ in 0..3 {
+            assert!(collector.run(|| parse("not a number")).is_err());
+            collector.assert_seen(&whole("exitium_profiler::parse"));
+        }
+
+        #[test]
+        fn scope_exits_on_panic() {
+            let collector = Collector::default();
+            let result = collector.run(|| {
+                std::panic::catch_unwind(|| {
+                    profile_scope!("exitium_profiler::boom");
+                    panic!("expected test panic");
+                })
+            });
+
+            assert!(result.is_err());
+            collector.assert_seen(&whole("exitium_profiler::boom"));
+        }
+
+        /// Each iteration's spans must close before the next iteration opens.
+        #[test]
+        fn scopes_in_loop_close_every_iteration() {
+            let collector = Collector::default();
+            collector.run(|| {
+                for _ in 0..2 {
                     profile_scope!("exitium_profiler::iteration");
+                    {
+                        profile_scope!("exitium_profiler::step");
+                    }
                 }
             });
 
-            let seen = collector.seen.lock().unwrap();
-            let enters = seen
-                .iter()
-                .filter(|s| **s == Seen::Enter("exitium_profiler::iteration"))
-                .count();
-            let exits = seen
-                .iter()
-                .filter(|s| **s == Seen::Exit("exitium_profiler::iteration"))
-                .count();
-            assert_eq!((enters, exits), (3, 3));
+            let iteration = [
+                new("exitium_profiler::iteration"),
+                Seen::Enter("exitium_profiler::iteration"),
+                new("exitium_profiler::step"),
+                Seen::Enter("exitium_profiler::step"),
+                Seen::Exit("exitium_profiler::step"),
+                Seen::Exit("exitium_profiler::iteration"),
+            ];
+            let expected: Vec<Seen> = (0..2).flat_map(|_| iteration.clone()).collect();
+            collector.assert_seen(&expected);
+        }
+
+        #[test]
+        fn target_filter_selects_engine_spans() {
+            let engine = Collector::only("exitium");
+            engine.run(|| {
+                profile_scope!("exitium_profiler::filtered");
+            });
+            engine.assert_seen(&whole("exitium_profiler::filtered"));
+
+            let other = Collector::only("not_exitium");
+            other.run(|| {
+                profile_scope!("exitium_profiler::filtered");
+            });
+            other.assert_seen(&[]);
+        }
+
+        #[test]
+        fn scope_runs_without_a_subscriber() {
+            fn scoped() -> u32 {
+                profile_scope!("exitium_profiler::unobserved");
+                3
+            }
+
+            // A fresh thread has no scoped subscriber from another test.
+            let value = std::thread::spawn(scoped).join().unwrap();
+            assert_eq!(value, 3);
+        }
+
+        #[test]
+        fn threads_record_only_their_own_spans() {
+            let left = Collector::default();
+            let right = Collector::default();
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    left.run(|| {
+                        for _ in 0..100 {
+                            profile_scope!("exitium_profiler::left");
+                        }
+                    });
+                });
+                s.spawn(|| {
+                    right.run(|| {
+                        for _ in 0..100 {
+                            profile_scope!("exitium_profiler::right");
+                        }
+                    });
+                });
+            });
+
+            let expected = |name| -> Vec<Seen> { (0..100).flat_map(|_| whole(name)).collect() };
+            left.assert_seen(&expected("exitium_profiler::left"));
+            right.assert_seen(&expected("exitium_profiler::right"));
         }
     }
 }

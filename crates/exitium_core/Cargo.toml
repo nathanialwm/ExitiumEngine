@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+glam.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

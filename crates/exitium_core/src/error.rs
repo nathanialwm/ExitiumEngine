@@ -58,6 +58,7 @@ use std::fmt;
 use std::io;
 
 use crate::guid::ParseGuidError;
+use crate::math::ParseColorError;
 
 /// An error at a crate boundary. The [module docs](crate::error) say when to
 /// use it instead of a crate-local error.
@@ -68,6 +69,8 @@ use crate::guid::ParseGuidError;
 pub enum Error {
     /// A text that should be a [`Guid`](crate::Guid) is not one.
     ParseGuid(ParseGuidError),
+    /// A text that should be a hex [`Color`](crate::Color) is not one.
+    ParseColor(ParseColorError),
     /// A file, stream or other I/O operation failed.
     Io(io::Error),
     /// Any other error or message, boxed whole. Build it with
@@ -101,6 +104,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ParseGuid(error) => fmt::Display::fmt(error, f),
+            Self::ParseColor(error) => fmt::Display::fmt(error, f),
             Self::Io(error) => fmt::Display::fmt(error, f),
             Self::Other(error) => fmt::Display::fmt(error, f),
         }
@@ -113,6 +117,7 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::ParseGuid(error) => error.source(),
+            Self::ParseColor(error) => error.source(),
             Self::Io(error) => error.source(),
             Self::Other(error) => error.source(),
         }
@@ -126,6 +131,13 @@ impl From<ParseGuidError> for Error {
     }
 }
 
+impl From<ParseColorError> for Error {
+    #[inline]
+    fn from(error: ParseColorError) -> Self {
+        Self::ParseColor(error)
+    }
+}
+
 impl From<io::Error> for Error {
     #[inline]
     fn from(error: io::Error) -> Self {
@@ -136,7 +148,7 @@ impl From<io::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Guid;
+    use crate::{Color, Guid};
 
     /// An error with a source, to check what `Error` forwards.
     #[derive(Debug)]
@@ -182,12 +194,19 @@ mod tests {
             let read: io::Result<u8> = Err(io::Error::from(io::ErrorKind::NotFound));
             Ok(read?)
         }
+        fn tint(text: &str) -> Result<Color> {
+            Ok(Color::from_hex(text)?)
+        }
 
         assert!(matches!(
             load("nope"),
             Err(Error::ParseGuid(ParseGuidError::InvalidLength { len: 4 }))
         ));
         assert!(matches!(read(), Err(Error::Io(e)) if e.kind() == io::ErrorKind::NotFound));
+        let color = ParseColorError::InvalidLength { len: 2 };
+        let error = tint("#ff").unwrap_err();
+        assert!(matches!(error, Error::ParseColor(e) if e == color));
+        assert_eq!(report(&error), [color.to_string()]);
     }
 
     #[test]

@@ -15,6 +15,11 @@ repository = "https://github.com/nathanialwm/ExitiumEngine"
 # Default features off: no rayon or plotters; `cargo xtask bench-ci` only reads
 # criterion's JSON estimates.
 criterion = { version = "0.8.2", default-features = false }
+# Vectors, matrices and quaternions behind `exitium_core::math`. MIT OR
+# Apache-2.0, and no dependencies of its own with these features. Default
+# features off: `std` plus only the scalar types the engine uses (`f32` is
+# always built; `f64` for `DVec2`, `i32`/`u32` for `IVec*`/`UVec*`), not all ten.
+glam = { version = "0.34.3", default-features = false, features = ["std", "f64", "i32", "u32"] }
 
 [workspace.lints.rust]
 # Denied by default; designated modules opt in with #[allow(unsafe_code)] (see CLAUDE.md unsafe policy).

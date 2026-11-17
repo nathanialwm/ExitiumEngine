@@ -17,12 +17,11 @@ description: Take one approved Exitium GitHub issue from branch to open PR, meet
 5. **Verify (definition of done)** and fix until all pass:
    ```bash
    cargo fmt --all
-   cargo clippy --workspace --all-targets -- -D warnings
-   cargo test --workspace
-   cargo build --workspace --target wasm32-unknown-unknown --exclude exitium_reflect_derive --exclude exitium_editor --exclude exitium_cli
+   cargo xtask ci all   # fmt check, clippy -D warnings, tests, WASM build: the same steps CI runs
    ```
+   A crate that cannot target the web goes in `NATIVE_ONLY` in `xtask/src/ci.rs` (a gated path; say why in the PR).
    If you touched hot paths, also run the relevant benchmarks and include the numbers.
-6. **Push:** `git push -u origin <branch>`. The pre-push hook refreshes the graph; if it says "graph updated, push again", push again.
+6. **Push:** `cargo xtask push -u origin <branch>`. The pre-push hook refreshes the graph and the wrapper retries when it does. If `cargo xtask install-hooks` was never run in this clone, run it once first.
 7. **Open the PR as the App:**
    ```bash
    T pr create --title "<type>(<scope>): <summary>" --body "Closes #<N>

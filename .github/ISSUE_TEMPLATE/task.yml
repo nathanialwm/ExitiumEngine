@@ -1,0 +1,30 @@
+name: Task
+description: One PR-sized unit of work (feature, refactor, chore).
+title: "<type>(<scope>): <summary>"
+labels: ["status:needs-approval"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Problem / goal
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Links to the spec, ADR, PLAN.md phase, or the issue/PR this came from.
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: One "Blocked by #N" per line, or "none".
+      value: none

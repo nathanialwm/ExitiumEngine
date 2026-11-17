@@ -1,0 +1,107 @@
+# Definition-of-done checks (CLAUDE.md). Each step calls `cargo xtask ci <step>`,
+# the same command agents run locally. `ci-pass` is the single check the merge
+# gate requires; it fails if any job failed and treats skipped jobs as passing.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  changes:
+    runs-on: [self-hosted, exitium-linux]
+    outputs:
+      macos: ${{ steps.paths.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # macOS runs only for platform, render or windowing changes (INTERVIEW.md R2).
+      - id: paths
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "macos=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
+          if echo "$changed" | grep -qE '^(crates/exitium_(platform|render)/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "macos=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  linux:
+    runs-on: [self-hosted, exitium-linux]
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo xtask ci fmt
+      - run: cargo xtask ci clippy
+      - run: cargo xtask ci test
+      - run: cargo xtask ci wasm
+
+  deny:
+    runs-on: [self-hosted, exitium-linux]
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo xtask ci deny
+
+  miri:
+    runs-on: [self-hosted, exitium-linux]
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo xtask ci miri
+
+  bench:
+    if: github.event_name == 'pull_request'
+    # Only exitium-linux-1 carries this label, so benchmarks queue (never cancel)
+    # and run one at a time.
+    runs-on: [self-hosted, exitium-bench]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - run: cargo xtask bench-ci "${{ github.event.pull_request.base.sha }}"
+        env:
+          EXITIUM_ALLOW_REMOVED_BENCHES: ${{ contains(github.event.pull_request.labels.*.name, 'bench:removal-ok') }}
+
+  windows:
+    runs-on: [self-hosted, exitium-windows]
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo xtask ci clippy
+      - run: cargo xtask ci test
+
+  macos:
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo xtask ci clippy
+      - run: cargo xtask ci test
+
+  ci-pass:
+    if: always()
+    needs: [changes, linux, deny, miri, bench, windows, macos]
+    runs-on: [self-hosted, exitium-linux]
+    steps:
+      - name: All jobs passed or were skipped
+        run: |
+          results='${{ toJSON(needs.*.result) }}'
+          echo "$results"
+          if echo "$results" | grep -qE '"(failure|cancelled)"'; then
+            echo "::error::a required CI job failed or was cancelled"
+            exit 1
+          fi

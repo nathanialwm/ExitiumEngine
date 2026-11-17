@@ -35,6 +35,8 @@ Exitium is a performance-first 2D game engine in Rust. **Its primary user is an 
 - Docs and MCP tool schemas are updated when behavior changed.
 - The graph has been refreshed (the pre-push hook does this).
 
+`cargo xtask ci all` runs the fmt, clippy, test and WASM checks exactly as CI does.
+
 ## Human gates
 
 A PR needs the owner's `human-approved` label before merge if it touches any of:
@@ -52,6 +54,7 @@ Label such PRs `gate:human`, and say in the PR body why the gate applies. Never 
 ## Workflow
 
 - **Branch:** `<type>/<issue#>-<slug>` (e.g. `feat/42-archetype-storage`). One issue → one branch → one worktree → one PR.
+- **Push:** `cargo xtask push` (retries after the pre-push hook refreshes the graph). Run `cargo xtask install-hooks` once per clone.
 - **Commits and PR titles:** Conventional Commits (`feat(ecs): ...`, `fix(render): ...`, `chore: ...`). PRs are squash-merged.
 - **PR body:** `Closes #N`, a summary, what changed, how it was verified, gates touched.
 - **Specs:** systems-level work needs a spec in `docs/specs/` or an ADR in `docs/decisions/`, approved before implementation. Small tasks don't.
@@ -74,3 +77,14 @@ Credentials live in `~/.exitium-factory/`. Never print, copy or commit them. Exc
 - Agent-filed issues start as `status:needs-approval`. Only the `issue-approver` agent moves them to `status:approved`.
 - Roles and models are defined in `.claude/agents/`. Skills are in `.claude/skills/`.
 - Changes to factory rules, skills or agents are PRs behind the human gate. Large or risky process changes are suggested in chat, not PR'd.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code. Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. When the answer is under a Markdown heading, `graphify section "<heading>"` prints that section's text, so the .md need not be opened. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.

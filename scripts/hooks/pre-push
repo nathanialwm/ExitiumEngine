@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Refreshes the graphify knowledge graph before every push (INTERVIEW.md R9).
+# A hook cannot add a commit to the push in progress, so if the graph changed it
+# commits the refresh and aborts. `cargo xtask push` retries automatically.
+# Installed by `cargo xtask install-hooks`.
+set -euo pipefail
+
+# Git passes one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+# Only branch pushes refresh the graph; deletions and tags are left alone.
+pushes_branch=false
+# Check the remote ref: `git push origin HEAD` reports the local ref as "HEAD".
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  if [[ "$remote_ref" == refs/heads/* && ! "$local_sha" =~ ^0+$ ]]; then
+    pushes_branch=true
+  fi
+done
+$pushes_branch || exit 0
+
+if ! command -v graphify >/dev/null 2>&1; then
+  echo "pre-push: graphify not installed; skipping graph refresh" >&2
+  exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+graphify update . >/dev/null 2>&1 || {
+  echo "pre-push: graphify update failed; run it by hand to see why" >&2
+  exit 1
+}
+
+# The report stamps the build commit and date, which change on every commit.
+# Ignore those lines, or every refresh would trigger another refresh.
+graph_files=(graphify-out/graph.json graphify-out/GRAPH_REPORT.md)
+if git diff --quiet -I 'Built from commit' -I '^# Graph Report' -- "${graph_files[@]}" &&
+  [ -z "$(git ls-files --others --exclude-standard -- "${graph_files[@]}")" ]; then
+  git checkout -- "${graph_files[@]}" 2>/dev/null || true
+  exit 0
+fi
+
+# Commit only the graph files, never anything else the agent had staged.
+git add -- "${graph_files[@]}"
+git commit --quiet --no-verify -m "chore(graph): refresh" -- "${graph_files[@]}"
+echo "pre-push: graph updated, push again (cargo xtask push retries automatically)" >&2
+exit 1

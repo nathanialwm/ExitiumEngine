@@ -12,7 +12,7 @@
 #
 # Usage: scripts/factory/merge-pr.sh <pr-number>
 # Exit codes: 0 merged, 1 a check failed, 2 checks still pending (or a
-# needs-human PR waiting for the owner's human-approved label).
+# needs-human PR waiting for the owner's human-approved status).
 set -euo pipefail
 
 pr="${1:?usage: merge-pr.sh <pr-number>}"
@@ -35,16 +35,26 @@ read -r state head base < <(gh pr view "$pr" --repo "$repo" --json state,headRef
 pending=0
 failed=0
 
-# Latest status per context from the expected creator (the API lists newest first).
+# Sets $newest to the newest state of a context from the expected creator, or
+# "missing". The API lists statuses newest first, and --paginate reads every
+# page, so a busy head can't push the status off the first page. gh's --jq runs
+# on each page in turn, so the matching states print newest first.
 # gh's built-in --jq is used because jq itself is not installed everywhere.
+newest_state() {
+  local context="$1" creator="$2" states
+  states=$(gh api --paginate "repos/$repo/commits/$head/statuses?per_page=100" --jq \
+    ".[] | select(.context == \"$context\" and .creator.login == \"$creator\") | .state")
+  newest=$(head -n 1 <<< "$states")
+  [ -n "$newest" ] || newest=missing
+}
+
 check_status() {
-  local context="$1" creator="$2" result
-  result=$(gh api "repos/$repo/commits/$head/statuses?per_page=100" --jq \
-    "[.[] | select(.context == \"$context\" and .creator.login == \"$creator\")] | first | .state // \"missing\"")
-  case "$result" in
+  local context="$1"
+  newest_state "$context" "$2"
+  case "$newest" in
     success) echo "ok       $context" ;;
     pending | missing) echo "pending  $context"; pending=1 ;;
-    *) echo "FAILED   $context ($result)"; failed=1 ;;
+    *) echo "FAILED   $context ($newest)"; failed=1 ;;
   esac
 }
 check_status pr-title "$actions_bot"
@@ -62,9 +72,17 @@ esac
 
 # Belt and braces for escalated PRs: don't trust a stale human-gate success if
 # the gate job lagged; require the owner's approval status on this head directly.
+# pr-approval.yml posts human-approved `success` when the owner applies the label
+# and `failure` when they remove it, so only the newest one counts. A withdrawn
+# approval, like a missing one, leaves the PR waiting for the owner: pending.
 labels=$(gh pr view "$pr" --repo "$repo" --json labels --jq '.labels[].name')
 if grep -qx needs-human <<< "$labels"; then
-  check_status human-approved "$actions_bot"
+  newest_state human-approved "$actions_bot"
+  if [ "$newest" = success ]; then
+    echo "ok       human-approved"
+  else
+    echo "pending  human-approved ($newest)"; pending=1
+  fi
 fi
 
 [ "$failed" = 0 ] || exit 1

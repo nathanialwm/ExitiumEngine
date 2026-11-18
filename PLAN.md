@@ -217,7 +217,7 @@ The check fails unless the owner has applied `human-approved` when a PR touches 
 
 ### Phase 6 — Platform, online and backend
 
-1. Web build pipeline (wasm-bindgen, threads when cross-origin isolated, WebGL2 fallback) and itch.io packaging.
+1. Web build pipeline (wasm-bindgen, threads when cross-origin isolated, wgpu's WebGPU backend only for the Jam MVP; a WebGL2 fallback is deferred, not dropped, see `docs/specs/jam-mvp.md` and `docs/specs/render-v1.md`) and itch.io packaging.
 2. `exitium_steam`: Steamworks init, achievements, Steam cloud as a save provider, overlay, demo app.
 3. `exitium_net` v1: transport, authoritative client/server, replication of components marked via reflection.
 4. `exitium_server`: headless runtime built for stateless, horizontal scaling.

@@ -63,7 +63,8 @@ Credentials live in `~/.exitium-factory/`. Never print, copy or commit them. Exc
 
 ## Factory operating rules
 
-- At most **3** issues in progress at once (`status:in-progress`).
+- At most **8** issues in progress at once (`status:in-progress`). An issue starts only when the orchestrator is certain it cannot conflict with any in-progress issue: disjoint footprints, no shared hotspot, no crate dependency between them (`factory-run` step 3). When in doubt, it waits.
+- Every issue declares a `## Footprint` (the paths it will edit). Implementers stay inside it, and the reviewer rejects a diff that leaves it.
 - **Do not start a new issue when less than 5% of session usage remains.** Finish or hand off in-flight work.
 - Agent-filed issues start as `status:needs-approval`. Only the `issue-approver` agent moves them to `status:approved`.
 - Roles and models are defined in `.claude/agents/`. Skills are in `.claude/skills/`.

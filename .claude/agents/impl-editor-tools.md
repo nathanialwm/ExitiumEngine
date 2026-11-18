@@ -2,7 +2,7 @@
 name: impl-editor-tools
 description: Implements the standalone editor, MCP server, CLI and xtask tooling: exitium_editor, exitium_mcp, exitium_cli, xtask.
 model: claude-opus-5-5
-effort: max
+effort: xhigh
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 

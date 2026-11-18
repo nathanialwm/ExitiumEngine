@@ -2,7 +2,7 @@
 name: impl-net-backend
 description: Implements networking, the server runtime, backend services and platform integration: exitium_net, exitium_server, exitium_backend, exitium_steam.
 model: claude-opus-5-5
-effort: max
+effort: xhigh
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 

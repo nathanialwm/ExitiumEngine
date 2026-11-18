@@ -11,6 +11,7 @@ description: Take one approved Exitium GitHub issue from branch to open PR, meet
 2. **Branch:** create `<type>/<N>-<slug>` from the latest `origin/main`. If you are not already in an isolated worktree, create one with `git worktree add ../exitium-wt/<branch> -b <branch> origin/main`.
 3. **Orient:** run `graphify query "<what you need>"`, then read the target crate's `CLAUDE.md`. Read only the files you will touch.
 4. **Implement:** follow CLAUDE.md design and code rules. Make small Conventional Commits.
+   - Edit only paths listed in the issue's `## Footprint`. Other issues run in parallel on the paths outside it. If you need a path outside it, stop, comment the path and the reason on the issue, and return `blocked: footprint <paths>`.
    - Justify any new dependency in the PR body (license, wasm support, why not std).
    - Do not add `unsafe` outside designated modules.
    - If you add an editor command, add its MCP tool.

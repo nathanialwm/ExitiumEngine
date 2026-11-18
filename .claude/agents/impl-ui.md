@@ -2,7 +2,7 @@
 name: impl-ui
 description: Implements the game UI system and does UI design work: exitium_ui widgets, layout, theming, data binding, UI markup, UI editor views.
 model: claude-opus-5-5
-effort: max
+effort: xhigh
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 

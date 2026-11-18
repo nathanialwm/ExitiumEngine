@@ -2,7 +2,7 @@
 name: impl-scripting
 description: Implements Luau scripting integration: exitium_script, Lua bindings generated from reflection, script hot reload.
 model: claude-opus-5-5
-effort: max
+effort: xhigh
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 

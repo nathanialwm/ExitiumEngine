@@ -797,7 +797,7 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - New crate edges: none
 ```
 - Scope: `plugin/extract.rs`, `benches/extract.rs`, additions to `RenderPlugin::build`.
-- Acceptance: `extract_cameras` (cameras and the enabled scene view, and the `CameraViews` resource that survives `render_frame`) and `extract_draws` in set `EXTRACT`, `render_frame` in set `RENDER`, of the `Extract` schedule; `Guid` resolved through the stores (empty until I16); a headless app golden test (sprite, text, camera, hierarchy, hidden entity); the `extract/sprites` benchmark within its ceiling.
+- Acceptance: `extract_cameras` (cameras and the enabled scene view, and the `CameraViews` resource that survives `render_frame`) and `extract_draws` in set `EXTRACT`, `render_frame` in set `RENDER`, of the `Extract` schedule, reading the renderer through `RendererSlot` and doing nothing when it is empty (a test runs a frame with an empty slot); `Guid` resolved through the stores (empty until I16); a headless app golden test (sprite, text, camera, hierarchy, hidden entity); the `extract/sprites` benchmark within its ceiling.
 - Blocked by: intake-2, I14.
 
 **I16. `feat(render): plugin renderer init, resize and stores`** (about 450 lines)

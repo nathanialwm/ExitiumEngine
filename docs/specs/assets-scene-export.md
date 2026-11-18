@@ -106,17 +106,24 @@ impl AssetRegistry {
 (
   assets: [
     (
-      guid: "67e55044-10b1-426f-9247-bb680e5fe0c8",
-      path: "sprites/coin.png",
+      guid: "0b1c2d3e-4f50-8061-a273-8495a6b7c8d9",
+      path: "scenes/main.scene",
+      kind: Scene,
+      image: None,
+    ),
+    (
+      guid: "67e55044-10b1-826f-9247-bb680e5fe0c8",
+      path: "sprites/hero.png",
       kind: Image,
       image: Some((filter: Nearest, mips: false, edge_bleed: false)),
     ),
-    (guid: "0b1c2d3e-4f50-8061-a273-8495a6b7c8d9", path: "scenes/main.scene", kind: Scene, image: None),
   ],
 )
 ```
 
-`Manifest { assets: Vec<AssetInfo> }` derives `Reflect`, so the text, the schema and the MCP view come from reflection (design rule 2). Entries are written sorted by path (UTF-8 byte order), so a diff shows one changed line per change. A manifest is read with `UnknownFields::Warn` (an older build reads a newer file). Loading validates every `AssetInfo` through `AssetRegistry::insert` and reports all failures at once. On native a missing manifest is an empty registry (a fresh project). On the web a missing manifest is `ManifestState::Failed` and the game shows it. The CLI reads the same file through the syntax tree only (see "CLI").
+This is the writer's exact output (serial-text-format.md "Writer: canonical output"): every field is written, a record whose members are not all leaf-like is broken (`image: Some(..)` is not leaf-like) and a flat record would pass column 100 here anyway, entries are sorted by path (`scenes/main.scene` before `sprites/hero.png`), and the trailing commas are the writer's.
+
+`Manifest { assets: Vec<AssetInfo> }` derives `Reflect`, so the text, the schema and the MCP view come from reflection (design rule 2). **How `AssetPath` reflects:** it is a hand-written `Value` kind with an invariant (reflect-model.md, "Value kinds with an invariant"), stable name `exitium_assets::AssetPath`, `repr: String`, no text form, implemented in the `manifest` feature. Every write routes through `AssetPath::new`, so a path that breaks the rules can never be stored: `set_value`, `from_reflect`, `apply` and the text binder all fail with `ValueError::Invalid`, which serial reports as `InvalidValue` at the literal's span (`value "../x.png" is not valid for type AssetPath`). A transparent `String` wrapper would have skipped the rules on manifest load. Because the type cannot hold a bad path, `AssetRegistry::insert` has no path error; it reports duplicates, case clashes and a kind that does not match the extension. The schema hash sees `String` only. Entries are written sorted by path (UTF-8 byte order), so a diff shows one changed line per change. A manifest is read with `UnknownFields::Warn` (an older build reads a newer file). Loading validates every `AssetInfo` through `AssetRegistry::insert` and reports all failures at once. On native a missing manifest is an empty registry (a fresh project). On the web a missing manifest is `ManifestState::Failed` and the game shows it. The CLI reads the same file through the syntax tree only (see "CLI").
 
 #### Loading
 
@@ -213,12 +220,28 @@ A scene file is text with the header `%exitium-text 1 root exitium_scene::SceneF
 (
   entities: [
     (
-      id: @camera,
+      id: @main_camera,
       parent: None,
       components: [
         exitium_scene::Name("Main camera"),
-        exitium_app::Transform2d(translation: (x: 0.0, y: 0.0), rotation: 0.0, scale: (x: 1.0, y: 1.0)),
-        exitium_render::Camera2d(zoom: 1.0, active: true),
+        exitium_app::Transform2d(
+          translation: (x: 0.0, y: 0.0),
+          rotation: 0.0,
+          scale: (x: 1.0, y: 1.0),
+        ),
+        exitium_render::Camera2d(
+          scaling: PixelsPerUnit(1.0),
+          zoom: 1.0,
+          viewport: (
+            min: (x: 0.0, y: 0.0),
+            max: (x: 1.0, y: 1.0),
+          ),
+          pixel_perfect: false,
+          clear: Some((r: 0.05, g: 0.05, b: 0.08, a: 1.0)),
+          layers: 1,
+          order: 0,
+          active: true,
+        ),
       ],
     ),
     (
@@ -226,22 +249,38 @@ A scene file is text with the header `%exitium-text 1 root exitium_scene::SceneF
       parent: None,
       components: [
         exitium_scene::Name("Hero"),
-        exitium_app::Transform2d(translation: (x: 12.5, y: -3.0), rotation: 0.0, scale: (x: 1.0, y: 1.0)),
+        exitium_app::Transform2d(
+          translation: (x: 12.5, y: -3.0),
+          rotation: 0.0,
+          scale: (x: 1.0, y: 1.0),
+        ),
         exitium_render::Sprite(
-          image: Some("67e55044-10b1-426f-9247-bb680e5fe0c8"), // sprites/hero.png
+          image: Some("67e55044-10b1-826f-9247-bb680e5fe0c8"), // sprites/hero.png
+          rect: None,
+          size: None,
           anchor: (x: 0.5, y: 0.5),
+          tint: (r: 1.0, g: 1.0, b: 1.0, a: 1.0),
+          flip_x: false,
+          flip_y: false,
           layer: 2,
+          z: 0.0,
+          mask: 1,
+          visible: true,
         ),
       ],
     ),
     (
       id: @hero_shadow,
       parent: Some(@hero),
-      components: [exitium_scene::Name("Hero shadow")],
+      components: [
+        exitium_scene::Name("Hero shadow"),
+      ],
     ),
   ],
 )
 ```
+
+The example is the writer's exact output for those components (field lists from render-v1.md and app-platform.md as of this spec), so it also loads. The layout rules that produce it, from serial-text-format.md "Layout": a struct is **flat** only when every member is leaf-like and it has at most 4 members (`(x: 12.5, y: -3.0)`, `Some((r: .., g: .., b: .., a: ..))`); anything with a non-leaf member (`Transform2d`, `Camera2d`'s `viewport`) or more than 4 members is **broken**, one member per line with a trailing comma. The envelope's own layout is fixed by this crate: `entities`, each record and each `components` list are always broken, so one component edit is one hunk in a diff. Because every field is written (serial writes defaults too), an agent that writes a scene by hand must also write every field, **unless** the component marks the field `#[reflect(default)]`; render I14 is adjusted to do that (see "Downstream adjustments"), so a hand-written `Sprite(image: Some(".."))` loads, with a `DefaultedField` warning per filled field.
 
 Rules:
 
@@ -249,7 +288,9 @@ Rules:
 - **Labels.** `id: @label` **declares** a label. Every other `@label` in the file is a use and must be declared (`UnknownLabel`, with the closest declared names). Declared labels are unique (`DuplicateLabel`, with the first span). Forward references are fine. The writer derives a label from the entity's `Name`: lowercase, every character outside `[a-z0-9_]` becomes `_`, runs of `_` collapse, empty becomes `e`; a collision appends `_2`, `_3` and so on. An entity without a `Name` is `@e<n>`, where `n` is its 1-based position in the file. Labels are derived on every write, so renaming an entity renames its label (a one-line diff plus its uses).
 - **Components** are tagged groups, `exitium_app::Transform2d(..)`. Each type must be registered with `ReflectComponent`. A type appears at most once per entity (`DuplicateComponent`). A component is written in this order: `exitium_scene::Name` first, then the rest by stable type name (UTF-8 bytes). `Name` is a plain tuple struct (`Name(pub String)`, not `transparent`), so its tagged form is unambiguous.
 - **Order.** Entities are written in pre-order of the hierarchy: roots in `Entity` index order, children in their parent's `Children` order. Loading spawns in file order and re-parents in file order, so sibling order survives a round trip. Index order of roots is a diff-noise heuristic only (open question 6).
-- **Skipped on save.** A component is not written when: it has no `ReflectComponent`; its `TypeInfo` carries `custom(derived = true)` (`GlobalTransform2d`, app-platform.md); it is `SceneMember`; or it is `Parent` or `Children` (matched by the stable names `exitium_ecs::Parent` and `exitium_ecs::Children`, checked by a test against the registry). The parent relation is the record's `parent` field, and `Children` is rebuilt through the hierarchy helper (`set_parent`, #49) on load. Physics bodies, colliders' internal links and any other derived state are rebuilt by their own systems (physics-2d.md: "the physics world is derived state and is never saved").
+- **Skipped silently on save** (by design, nothing is lost): a component whose `TypeInfo` carries `custom(derived = true)` (`GlobalTransform2d`, app-platform.md); `SceneMember`; and `Parent` and `Children` (matched by the stable names `exitium_ecs::Parent` and `exitium_ecs::Children`, checked by a test against the registry). The parent relation is the record's `parent` field, and `Children` is rebuilt by #49's `Commands` helpers on load.
+- **Reported, never silent.** A component on a member entity whose type has **no `ReflectComponent`** cannot be written. `write_scene` returns one `SceneWarning::UnsavedComponent { type_name, entities }` per such type (the ECS-registered type name and the number of entities; an agent that forgot `#[reflect(Component)]` sees it in the `scene_save` result). `SaveOptions::strict` turns it into an error (`SceneErrorKind::UnsavedComponent`). Known internal state that is rebuilt by its own systems (physics `BodyLink` and `ColliderLink`, "the physics world is derived state and is never saved", physics-2d.md) is listed in `SaveOptions::ignore_unreflected` by name, so the facade passes a constant `INTERNAL_COMPONENTS` and a save of a physics scene stays quiet while any other unreflected type is reported.
+- **Parent outside the scene.** A saved root whose `Parent` is not a member is written `parent: None` and becomes a root on reload. In `SaveScope::Scene` this also gives `SceneWarning::ParentOutsideScene { entity }` (a member authored under a runtime entity loses that link, and so does an instance that was attached with `InstantiateOptions::parent`). In `SaveScope::Entities` the listed entities are the roots by definition, so there is no warning.
 - **Entity references** in components (`Attack(target: @boss)`) use the serial `TextRefs` hook: the writer maps an entity's canonical text to its label and refuses an entity that is not in the file (`ReferenceOutsideScene`, naming the component and field), so a saved scene never contains `"42v1"`.
 - **Asset references** are `Guid` fields, written as the UUID string with the asset's path in a comment (`// sprites/hero.png`), from the `asset_path` callback below. The comment is regenerated on every write and ignored on read.
 - **Author-time convenience (decided here, serial-text-format.md leaves it to #111).** When the caller passes `resolve_asset`, a `Guid` field may be written as a path (`image: Some("sprites/hero.png")`). The reader maps it to the registered `Guid`; an unknown path is a `Reference` error. The next write normalizes it to the UUID. Without a resolver a path is a `TextForm` error. An agent that hand-writes a scene can therefore name assets by path.
@@ -293,16 +334,22 @@ pub struct SceneInstance {
 }
 
 pub enum SaveScope<'a> { Scene(SceneId), Entities(&'a [Entity]) }          // Entities: these and their descendants
-pub struct SaveOptions<'a> { pub asset_path: Option<&'a dyn Fn(Guid) -> Option<String>> }
-pub fn write_scene(world: &World, registry: &TypeRegistry, scope: SaveScope<'_>, opts: &SaveOptions<'_>) -> Result<String, SceneErrors>;
+pub struct SaveOptions<'a> {
+    pub asset_path: Option<&'a dyn Fn(Guid) -> Option<String>>,
+    pub strict: bool,                                          // default false: unreflected components are warnings, true: errors
+    pub ignore_unreflected: &'a [&'a str],                     // ECS type names that are internal state (see "Reported, never silent")
+}
+pub struct SavedScene { pub text: String, pub warnings: Vec<SceneWarning> }
+pub enum SceneWarning { UnsavedComponent { type_name: String, entities: u32 }, ParentOutsideScene { entity: String }, Text(TextWarning) /* load side: binder warnings */ }
+pub fn write_scene(world: &World, registry: &TypeRegistry, scope: SaveScope<'_>, opts: &SaveOptions<'_>) -> Result<SavedScene, SceneErrors>;
 pub fn validate_scene(text: &str, registry: &TypeRegistry, resolve_asset: Option<&dyn Fn(&str) -> Option<Guid>>) -> ValidationReport;  // instantiates into a scratch World
-pub fn despawn_scene(world: &mut World, scene: SceneId) -> usize;         // despawn_recursive of every member root; returns the count
+pub fn despawn_scene(world: &mut World, scene: SceneId) -> usize;         // #49's despawn_recursive for every member root, through a local CommandQueue applied before returning; returns the count
 pub fn mark_member(world: &mut World, entity: Entity, scene: SceneId);
 pub fn register_types(world: &mut World, registry: &mut TypeRegistry);    // Name, SceneMember, SceneId, Scenes (the facade glue calls it; no Plugin here)
 
 pub struct SceneErrors { pub errors: Vec<SceneError>, pub truncated: bool }       // up to 16, never empty
 pub struct SceneError { pub kind: SceneErrorKind, pub entity: Option<String> /* label */, pub component: Option<String>, pub text: Option<TextError>, pub message: String }
-pub enum SceneErrorKind { Syntax, Envelope, DuplicateLabel, UnknownLabel, UnknownComponentType, DuplicateComponent, Bind, ReferenceOutsideScene, ParentCycle, TooLarge, Insert }
+pub enum SceneErrorKind { Syntax, Envelope, DuplicateLabel, UnknownLabel, UnknownComponentType, DuplicateComponent, Bind, ReferenceOutsideScene, UnsavedComponent, ParentCycle, TooLarge, Insert }
 ```
 
 `ParsedScene::parse` and `instantiate` take no `Plugin` or `App`. The caller holds the registry read guard for the whole call (serial threading rule).
@@ -313,13 +360,15 @@ pub enum SceneErrorKind { Syntax, Envelope, DuplicateLabel, UnknownLabel, Unknow
 2. `instantiate`, phase one: spawn **one empty entity per declared label** (`World::spawn_empty`). Reserving without spawning would leave unflushed ids that `flush_entities` turns into phantom entities if the load fails (ecs-scheduler.md, abandonment), so the scene spawns real empty entities and despawns them on failure. Build `SceneRefs` (below) over the label table.
 3. Phase two: for every component node in file order, `bind_tagged` with `ReadOptions { unknown_fields, refs: Some(&mut SceneRefs), partial: false, limits }`. Errors are collected (up to 16 across the file). No component has been inserted yet.
 4. If there was any error: despawn the entities of phase one and return. The world is unchanged except for entity index and generation churn.
-5. Phase three: `ReflectComponent::insert` for each bound component (a failure here is `Insert`; the loader then despawns everything it created and returns). Then `SceneMember` on every entity, then `set_parent` for each record with a `parent` in file order, then `set_parent(root, p)` for every root when `opts.parent` is `Some(p)`.6. Return `SceneInstance`.
+5. Phase three: `ReflectComponent::insert` for each bound component (a failure here is `Insert`; the loader then despawns everything it created and returns). Then `SceneMember` on every entity.
+6. Hierarchy. #49 defines `set_parent` and `despawn_recursive` as `Commands` helpers (ecs-scheduler.md: `despawn_recursive` "applies through `Commands`"), not as `World` methods. The scene therefore builds a **local `CommandQueue`**, issues `set_parent` for each record with a `parent` in file order and `set_parent(root, p)` for every root when `opts.parent` is `Some(p)`, and **applies the queue before returning** (`CommandQueue::apply`, whose `ApplyReport` must show no skipped command). Nothing is deferred past the call, so the caller never sees a half-parented scene. If the apply reports a skip or a failure, the loader despawns everything it created, as in step 5, and returns `Insert`. `despawn_scene` uses the same pattern for `despawn_recursive`. This needs `Commands::new(&mut CommandQueue, &Entities)` and `CommandQueue::apply(&mut self, &mut World) -> ApplyReport` to be public in `exitium_ecs`, which is a small additive adjustment to #45 and #49 (see "Downstream adjustments"); no `World`-level variant is added.
+7. Return `SceneInstance`.
 
 `SceneRefs` implements `TextRefs`. `read_ref`: for `Entity`, an `@label` maps to the spawned entity's canonical text (`ReflectTextForm::to_text` through the registry); a plain `"42v1"` string is rejected in a scene (raw ids have no meaning in a file); for `Guid`, a UUID passes through and is recorded in `asset_refs`, a path goes through `resolve_asset`. `write_ref` is a pure function of `(site, canonical text)` (serial-text-format.md, "Hook calls"): labels are assigned before writing starts, so it never numbers by call order. The labels of the scene being saved live in a `HashMap<String, String>` from canonical entity text to label.
 
 **Why not reserve entities.** The serial spec suggests `reserve_entity` for forward references. Spawn-empty costs one extra archetype move per entity, which the instantiate budget below includes, and removes a whole class of leak on failure. If the ECS later adds a safe `release_reserved`, the loader may switch.
 
-**Writing** collects members with a query over `SceneMember`, orders them (pre-order), assigns labels, then for each entity writes the record text itself and each component with `write_tagged` into a scratch `String`, re-indented by 6 columns. Serial's layout (flat or broken, the 100-column cap) is computed from the component's own first column, so a long flat component may reach column 106. This is deterministic and only a safety valve (serial-text-format.md "Layout"); a base-indent option in serial would remove it and is not required.
+**Writing** collects members with a query over `SceneMember`, orders them (pre-order), assigns labels, then for each entity writes the record text itself and each component with `write_tagged` into a scratch `String`, re-indented by 8 columns (entities 2, record 4, record fields 6, component items 8). Serial's layout (flat or broken, the 100-column cap) is computed from the component's own first column, so a long flat component may reach column 108. This is deterministic and only a safety valve (serial-text-format.md "Layout"); a base-indent option in serial would remove it and is not required.
 
 **Validate.** `validate_scene` instantiates into a scratch `World` with a copy of no resources (components are inserted by type data, so no resource is needed) and drops it. It is how a read-only MCP tool checks a file or a pasted text without touching the live world.
 
@@ -339,11 +388,12 @@ pub struct ClipId(/* core Handle<Clip> */);
 pub struct Voice(/* generational */);
 pub struct PlayOptions  { pub volume: f32 /*1*/, pub pitch: f32 /*1, 0.25..=4*/, pub pan: f32 /*0, -1..=1*/, pub looped: bool, pub bus: Bus /*Sfx*/, pub fade_in: f32 /*0*/ }
 pub struct MusicOptions { pub volume: f32 /*1*/, pub looped: bool /*true*/, pub fade_in: f32 /*1.0*/, pub crossfade: f32 /*1.0: the old track fades out over this*/ }
-pub struct AudioConfig  { pub max_voices: u16 /*64*/ }
+pub enum AudioOutput { Device, Null { sample_rate: u32 } }   // Null: no device; the mixer runs but plays nowhere (tests, CI, headless runs)
+pub struct AudioConfig  { pub max_voices: u16 /*64, global*/, pub output: AudioOutput /*Device*/, pub start_locked: Option<bool> /*None: true only for Device on wasm32*/ }
 pub struct AudioStats   { pub state: AudioState, pub voices: u16, pub clips: u32, pub dropped_locked: u64, pub dropped_limit: u64, pub dropped_missing: u64 }
 
 impl AudioEngine {
-    pub fn new(config: AudioConfig) -> AudioEngine;       // native: opens the default output now. web: starts Locked, no device
+    pub fn new(config: AudioConfig) -> AudioEngine;       // Device on native: opens the default output now. Device on the web: starts Locked, no device. Null: Ready at once unless `start_locked`
     pub fn unlock(&mut self) -> AudioState;               // web: creates the device, idempotent. native: no-op
     pub fn state(&self) -> &AudioState;
     pub fn insert_clip(&mut self, data: ClipData) -> Result<ClipId, AudioError>;   // 1..=16 Mi frames, 8,000..=192,000 Hz
@@ -354,13 +404,14 @@ impl AudioEngine {
     pub fn stop_music(&mut self, fade: f32);
     pub fn set_master_volume(&mut self, v: f32);   pub fn set_bus_volume(&mut self, bus: Bus, v: f32);
     pub fn update(&mut self);                                           // once per frame: reap finished voices, start pending music, refresh stats
+    pub fn advance_null(&mut self, frames: u32) -> f32;                 // test helper: runs the Null mixer for `frames` and returns the peak absolute sample; 0.0 for a Device output
     pub fn stats(&self) -> AudioStats;
 }
 ```
 
-- **Mixer.** The main track is master; `Music`, `Sfx` and `Ui` are sub-tracks. A sound plays into its bus's track. Voice limit: kira's `sound_capacity` is set to `max_voices`; a `play` past it is dropped and counted in `dropped_limit` (no stealing in the MVP).
+- **Mixer.** The main track is master; `Music`, `Sfx` and `Ui` are sub-tracks. A sound plays into its bus's track. **Voice limit.** kira's `sound_capacity` is **per track** (128 by default on the main track and on every sub-track), so it cannot express one global cap. The engine therefore counts voices itself: one counter over every bus, incremented by `play` and decremented in `update` when a voice has stopped. A `play` at `max_voices` is dropped and counted in `dropped_limit` (no stealing in the MVP). `play_music` ignores the cap, so music never fails, but its voices (at most two during a crossfade) are counted. The engine sets each track's `sound_capacity` to `max_voices + 2`, so kira's own limit is never the first one to trigger, and `AudioStats.voices` is the global counter.
 - **Music** is one slot. `play_music` with a different clip fades the old one out over `crossfade` and the new one in over `fade_in`. The same clip does nothing. While `Locked`, the latest `play_music` request is **remembered** and started by `unlock`, so title music begins at the first click. `play` (a sound effect) while `Locked` is dropped and counted in `dropped_locked`.
-- **No device is not a crash.** On Windows a missing output device, or in CI, gives `Unavailable(reason)` and every call is a counted no-op. Tests use kira's `MockBackend`, so the engine logic runs with no sound card; the engine is generic over the backend internally.
+- **No device is not a crash.** On Windows a missing output device, or in CI, gives `Unavailable(reason)` and every call is a counted no-op. **The test and headless path is public and kira-free:** `AudioOutput::Null { sample_rate }` runs the mixer on kira's `MockBackend` (which builds for wasm32 too), so engine logic and the facade's headless tests run with no sound card, and `advance_null(frames)` renders audio into nowhere and returns the peak sample, so a test can assert that a sound was audible without naming a kira type. `AudioPlugin` carries an `AudioConfig`, so a headless app builds `AudioPlugin { config: AudioConfig { output: AudioOutput::Null { sample_rate: 48_000 }, ..Default::default() } }`. `start_locked: Some(true)` with `Null` reproduces the web's `Locked` start on the host.
 - **Decoded clips are shared.** `insert_clip` converts `Vec<[f32; 2]>` into kira's `Arc<[Frame]>` in one pass and frees the source. Peak memory for that clip is 2x for the duration of the call.
 
 #### The web autoplay rule
@@ -381,11 +432,11 @@ A browser keeps an `AudioContext` that was created before any user gesture in th
 
 ### Facade glue (contract)
 
-By ruling (a) the facade holds every cross-crate system. These are issues FA1 to FA4 below, each listing `crates/exitium/` under `Hotspots`. FA1 is the asset half of render-v1.md's G1 (called G1b there).
+By ruling (a) the facade holds every cross-crate system. These are issues FA1 to FA4 below, each listing `crates/exitium/` under `Hotspots`. **FA1 is render-v1.md's G1b, not a second issue:** the architect files one issue (FA1, cross-linked as G1b), and adds this spec's blockers to it. The same holds for any other overlap with a peer spec's facade issue (the architect files each system once).
 
 | Glue | Runs | Behaviour |
 |---|---|---|
-| Asset to render and UI (FA1, `AssetGluePlugin`) | `Update`, after the plugin's `ASSETS` set | `take_loaded(Image)` becomes `TextureStore::insert(guid, ImageData, TextureDesc { filter, address: Clamp, mips })` built from the registry's `ImageSettings`; `take_loaded(Font)` becomes `FontStore::insert_font`. Requests every `Guid` found in `Sprite.image`, `Text.font` and the UI's image and font fields that is not in a store (one request per `Guid`). A `Failed` state logs once with the path. |
+| Asset to render and UI (FA1, `AssetGluePlugin`) | `Update`, after the plugin's `ASSETS` set | `take_loaded(Image)` becomes `TextureStore::insert(guid, ImageData, TextureDesc { filter, address: Clamp, mips })` built from the registry's `ImageSettings`; `take_loaded(Font)` becomes `FontStore::insert_font`. **Requests are change-driven, never a per-frame scan:** `Query<&Sprite, Changed<Sprite>>` and `Query<&Text, Changed<Text>>` (an `Added` row counts as `Changed`, so a spawn is seen) feed a `Local<HashSet<Guid>>` of `Guid`s already requested; the UI part walks the `UiDrawList`'s image and font `Guid`s only when the UI tree's `paint_revision` is newer than the glue's last seen value (ui-mvp.md). A `Guid` that is not in a store and not yet requested is requested once. Cost is proportional to the rows that changed, and 20,000 unchanged sprites cost one filter check per archetype chunk (budget below). A `Failed` state logs once with the path. |
 | Asset to audio (FA2, `AudioGluePlugin`) | `Update`, after `ASSETS` | `take_loaded(Audio)` becomes `ClipStore::insert(guid, ClipData)`. In `First`, after `INPUT`: the autoplay unlock above. |
 | Scene loading (FA3, `ScenePlugin`) | `Update` | An event `LoadScene { path: String, mode: LoadMode (Replace or Additive), parent: Option<Entity> }` requests the `.scene` asset. When its `Scene` payload is taken, the glue parses and instantiates it with `resolve_asset` from the registry, requests `SceneInstance.asset_refs`, and sends `SceneLoaded { scene, path }` or `SceneLoadFailed { path, errors: String }` (reflected events). `Replace` calls `despawn_scene` for the active scene first. The glue lives in a facade `ScenePlugin`, which inserts `Scenes` and calls `scene::register_types` (D7: `exitium_scene` has no `Plugin`). |
 | Save to disk (#110, not facade) | editor | `write_scene` then `native::write_atomic` then `AssetRegistry::register` for a new file. The editor depends on all three crates, so #110 composes it; no facade code is needed. |
@@ -417,8 +468,9 @@ Arguments are parsed by hand (about 150 lines): no `clap`. Exit codes: 0 ok, 1 f
   src/main.rs           App::new().add_plugins(DefaultPlugins).add_systems(Startup, load_main_scene).run();
                         load_main_scene sends LoadScene { path: "scenes/main.scene", mode: Replace, parent: None }
   assets/
-    assets.manifest     the manifest with one entry, scenes/main.scene
-    scenes/main.scene   one entity: a Camera2d with a Transform2d
+    assets.manifest     the manifest with one entry, scenes/main.scene (a minted Guid, written in the canonical layout)
+    scenes/main.scene   one entity, the `@main_camera` record of the example above with its full
+                        Name, Transform2d and Camera2d field lists, so it loads with no defaults involved
 ```
 
 `cargo run --features editor` starts the game with the editor and the live-control server (the `editor` feature lives in the facade, C2). `cargo run` starts the plain game. The `wasm-bindgen` pin makes the game's lock file resolve the same library version as the engine's workspace, so the one CLI version in "Export tools" is the right one. The engine reference defaults to a **path dependency on the checkout the CLI was built from** (`CARGO_MANIFEST_DIR/../..` baked in at compile time), because nothing is published (jam-mvp.md open question 5). `--engine-git <url> [--engine-rev <rev>]` writes a git dependency instead (the repository is public); `--engine-path` writes another path. The generated project must pass `cargo check` and `cargo check --target wasm32-unknown-unknown` (a CLI test does this when the toolchain is present).
@@ -428,13 +480,16 @@ The **project file** is `%exitium-text 1 root exitium_cli::Project`:
 ```
 %exitium-text 1 root exitium_cli::Project
 (
-  name: "my_game",       // package and binary name
-  title: "My Game",      // page title and window title
-  width: 1280,           // the page's canvas size and the default window size
+  name: "my_game",        // package and binary name
+  title: "My Game",       // the exported page's title
+  width: 1280,            // the exported page's canvas size
   height: 720,
-  background: "#101018", // page background colour
+  background: "#101018",  // the exported page's background colour
+  export_features: [],    // extra cargo features for `exitium export`, never "editor"
 )
 ```
+
+**What reads it, and when.** Only `exitium` itself reads the project file, and only in `exitium export` (step 1, before anything is built). `exitium new` writes it. Nothing reads it at run time: the game binary never parses it, and the editor does not. The window title and size of the running game come from the game's own `WindowConfig` in `src/main.rs`; `exitium new` writes the same title, width and height into both files, so they agree at creation and are independent afterwards (an edit to one is not picked up by the other). `export_features` is a list of cargo feature names passed as `--features` together with `--no-default-features`; the exporter refuses a list that contains `editor`. Its default is the empty list.
 
 It is read through `exitium_serial::parse_syntax` and a walk over the syntax tree (fields by name, `leaf::unescape_string` for strings). The CLI derives no `Reflect` (`exitium_cli` is in the reflect derive's `NOT_DERIVE_USERS`, reflect-model.md), and the root type name is a label, not a registered type. The export reads each manifest entry's `path` from `assets/assets.manifest` the same way. Unknown fields are ignored with a warning.
 
@@ -478,7 +533,7 @@ Not needed: Node, npm, `trunk`, `wasm-pack`, a system `zip`, Python. `exitium_cl
 **No `.github/workflows/` change is required for the MVP.**
 
 - `cargo xtask ci wasm` already builds every non-`NATIVE_ONLY` crate for wasm32, and `exitium_cli` is already `NATIVE_ONLY`. `exitium_assets`, `exitium_audio` and `exitium_scene` build for wasm32 and are covered.
-- The Linux runner image already has `libasound2-dev` (`ci/runner/linux/Dockerfile`), which kira's `cpal` needs on Linux. Audio tests use the mock backend, so no sound card is needed.
+- The Linux runner image already has `libasound2-dev` (`ci/runner/linux/Dockerfile`), which kira's `cpal` needs on Linux. Audio tests use `AudioOutput::Null`, so no sound card is needed.
 - `wasm-bindgen-cli` is not on the runners. The export tests use a fake `wasm-bindgen` script and a fake `cargo` shim (a plan test: the CLI builds a list of commands and the test checks it), and the real web export is the Stage 4 rehearsal, run by hand on Windows. A real export test is `#[ignore]`d.
 - The `deny` job runs automatically on the new dependencies. It needs the `deny.toml` exception for `triple_buffer` (below). That is a hotspot file in intake 1, not a workflow.
 - If the owner later wants a CI web-export smoke job, that is a change to `.github/workflows/ci.yml` (the owner pushes it) plus `cargo install wasm-bindgen-cli --version 0.2.130 --locked` in `ci/runner/linux/Dockerfile` (not a workflow, but the runner image must be rebuilt by the owner). It is not proposed for the MVP.
@@ -496,7 +551,7 @@ Not needed: Node, npm, `trunk`, `wasm-pack`, a system `zip`, Python. `exitium_cl
 
 Per cross-spec rule C4, this section is the list of what the three runtime crates expose. #110 builds every tool and panel generically from reflection and commands. A capability is parity-complete when the editor action and the MCP tool call the same function.
 
-**Reflected surface.** `AssetKind`, `ImageFilter`, `ImageSettings`, `AssetInfo`, `Manifest`; resource `AssetStatus` (`manifest: ManifestState`, `requested`, `loading`, `ready`, `failed` counts, `failed_list: Vec<AssetFailure { guid, path, message }>`); events `AssetLoaded { guid, kind }`, `AssetFailed { guid, kind, message }`. `Name`, `SceneMember` (`derived`), `SceneId`, resource `Scenes`; events `LoadScene`, `SceneLoaded`, `SceneLoadFailed` (FA3). `AudioSettings`, `AudioStats`, `Bus`, events `PlayAudio`, `StopAllAudio`, `PlayMusic`, `StopMusic`. Inspector fields: `Name` (text), `ImageSettings` (enum and two checkboxes), `AudioSettings` (four sliders). Components that hold a `Guid` asset reference (`Sprite.image`, `Text.font`, UI images) show an **asset picker**: the field carries `custom(widget = "asset", kind = "image")` (or `"font"`), which render and UI add to their derives; the picker lists `asset_list` for that kind.
+**Reflected surface.** `AssetKind`, `ImageFilter`, `ImageSettings`, `AssetInfo`, `Manifest`; resource `AssetStatus` (`manifest: ManifestState`, `requested`, `loading`, `ready`, `failed` counts, `failed_list: Vec<AssetFailure { guid, path, message }>`); events `AssetLoaded { guid, kind }`, `AssetFailed { guid, kind, message }`. `Name`, `SceneMember` (`derived`), `SceneId`, resource `Scenes`; events `LoadScene`, `SceneLoaded`, `SceneLoadFailed` (FA3). `AudioSettings`, `AudioStats`, `Bus`, events `PlayAudio`, `StopAllAudio`, `PlayMusic`, `StopMusic`. Inspector fields: `Name` (text), `ImageSettings` (enum and two checkboxes), `AudioSettings` (four sliders). Components that hold a `Guid` asset reference (`Sprite.image`, `Text.font`, UI images) show an **asset picker**: the field carries `custom(widget = "asset", kind = "image")` (or `"font"`), which render and UI add to their derives; the picker lists `asset_list` for that kind. **#110 builds the picker generically**: it reads the field's `custom("widget")` and `custom("kind")` from `TypeInfo`, shows the registered assets of that kind (with a thumbnail for images), and writes the chosen `Guid` through `SetField`; a field of type `Guid` without the widget stays a text box. The attribute is added by render's I14 and the UI's U12 (see "Downstream adjustments").
 
 **Commands and tools #110 builds.** Names follow `<domain>_<verb>`. "Undo" says what the bus records.
 
@@ -509,7 +564,7 @@ Per cross-spec rule C4, this section is the list of what the three runtime crate
 | Change image settings | `edit::set_image_settings` | `asset_set_settings` | command. Undo restores the old value. |
 | Rename or move (the `Guid` stays, so no scene changes) | `edit::rename_asset` | `asset_rename` | command. Undo renames back. |
 | Remove (the file goes to `<root>/.trash/`); the result lists the scenes that still reference the `Guid` | `edit::remove_asset`, `edit::find_references` | `asset_remove` | command. Undo moves the file back and re-registers. |
-| New, open (load), save, save as; list; validate text | `Scenes`, `write_scene`, `ParsedScene`, `validate_scene`, `despawn_scene` | `scene_new`, `scene_load` (`mode`, `parent`), `scene_save` (`path?`, `scope?`), `scene_list`, `scene_validate` (`text` or `path`) | `scene_load` and `scene_new` are commands: additive undo despawns the instance; replace keeps the previous scene's text and undo reloads it. `scene_save` writes a file, not the world, and has no undo. `scene_list`, `scene_validate` are read-only. |
+| New, open (load), save, save as; list; validate text | `Scenes`, `write_scene`, `ParsedScene`, `validate_scene`, `despawn_scene` | `scene_new`, `scene_load` (`mode`, `parent`), `scene_save` (`path?`, `scope?`), `scene_list`, `scene_validate` (`text` or `path`) | `scene_load` and `scene_new` are commands: additive undo despawns the instance; replace keeps the previous scene's text and undo reloads it. `scene_save` writes a file, not the world, and has no undo; its result carries the `SceneWarning` list (unsaved components, out-of-scope parents), so an agent that forgot `#[reflect(Component)]` is told. `scene_list`, `scene_validate` are read-only. |
 | Create an entity for authoring | the generic spawn command of #110 plus `mark_member(world, entity, active_scene)` | the entity tools of #110 | command. **Must call `mark_member`**, or the entity is not saved. |
 | Play a sound or music, stop, set volume | events and the `AudioSettings` resource | `audio_play`, `audio_play_music`, `audio_stop`, `audio_set_volume`, `audio_status` | `audio_play`, `audio_stop` are runtime actions with no undo (the bus must let a command declare "no undo", as physics-2d.md already requires). `audio_set_volume` is a resource edit with undo. `audio_status` reads `AudioStats`. The generic `ecs_send_event`, `ecs_set_resource_field` and `ecs_get_resource` already cover all of it; the named tools exist for discovery. |
 | Create a project, export | the CLI (`exitium new`, `exitium export --json`, `--check`) | `project_new`, `project_export_check`, `project_export` (`target`, `out?`) | ops tools: start the `exitium` binary as a process and return its JSON (no `exitium_mcp` to `exitium_cli` edge, jam-mvp.md Stage 4). Export is long: the tool reports progress lines and the final JSON. No undo. |
@@ -540,8 +595,9 @@ All numbers are initial targets on the min-spec reference runner (4 cores, 8 GB)
 | Scene load, parse to instantiate | <= 150 ms native; <= 300 ms Chrome |
 | Scene `write_scene`, 10,000 entities, `exitium_scene/write/10000` | <= 100 ms |
 | `validate_scene`, 10,000 entities | <= 200 ms |
+| Facade request scan (FA1), 20,000 unchanged sprites and 100 changed, `exitium/glue/request_scan/20000` | <= 1 µs unchanged; <= 150 ns per changed sprite |
 | Audio `play` | <= 3 µs |
-| Audio mix, 32 voices x 1,024 frames (mock backend), `exitium_audio/mix/32voices` | <= 0.4 ms (about 2% of one core at 48 kHz); on the web it runs on the main thread, so <= 1 ms per chunk in Chrome |
+| Audio mix, 32 voices x 1,024 frames (`AudioOutput::Null`), `exitium_audio/mix/32voices` | <= 0.4 ms (about 2% of one core at 48 kHz); on the web it runs on the main thread, so <= 1 ms per chunk in Chrome |
 | `insert_clip`, 1 Mi frames, `exitium_audio/insert_clip/1m_frames` | <= 12 ms |
 | Audio clip memory | 8 bytes per frame (a 60 s stereo 44.1 kHz clip is about 21 MiB) |
 | `exitium new` | <= 200 ms |
@@ -555,10 +611,10 @@ Complexity: scene parse and write are O(source bytes); instantiate is O(componen
 - **Paths and ids.** Every `AssetPath` rule, accept and reject (non-ASCII, `..`, leading dot, 201 bytes, case-only clash, the reserved name); `sanitize` table; the extension table; `mint` golden vectors, version and variant bits, collision bump, rename keeps the `Guid`.
 - **Decoders.** Generated PNGs (every colour type and bit depth, interlaced, tRNS, 1 x 1, 8192 x 1 and 8193 x 1 limit cases, truncated and corrupt files); edge bleed (colour only under alpha 0, alpha untouched, opaque image unchanged, 8-pixel reach); `encode_png` then `decode_png` equals the input. WAV through `hound`'s writer for every depth and float, mono duplicated, 3 channels unsupported, over-limit; an Ogg Vorbis fixture (a small CC0 file with its licence beside it) decodes to the expected frame count and sample rate; font fixture (an OFL face under 100 KB with its licence); bad bytes for each kind give `Decode` and never panic. A truncation sweep and a seeded random-bytes sweep for every decoder (std xorshift, as in serial).
 - **Server.** With `MemorySource`: state machine for every transition; `request` is idempotent; `retry`; `forget`; delivery exactly once per payload; `take_loaded` by kind; back-pressure pauses workers above `max_undelivered_bytes`; 1,000 requests across 2 workers all complete; `Drop` joins the workers; `auto_register`; `NotRegistered`. A web test module compiles for wasm32 (run by hand in Chrome).
-- **Manifest.** Round trip and fixed point (`write(read(write(x))) == write(x)`); sorted output; duplicate guid, duplicate path, case clash and kind-mismatch each reported together; unknown field warns; a golden file.
+- **Manifest.** `AssetPath` reflects as a validated `String` Value: a manifest with `path: "../x.png"` reads as `InvalidValue` at the literal and an `apply` of a bad string leaves the value unchanged. Round trip and fixed point (`write(read(write(x))) == write(x)`); sorted output; duplicate guid, duplicate path, case clash and kind-mismatch each reported together; unknown field warns; a golden file.
 - **Edit API.** Import copies and registers; import in place; import an image over 4096 downscales and the manifest keeps the `Guid`; every `AssetEdit::undo`; remove then undo restores file and entry; `find_references` finds a `Guid` in a scene and a `.ui` file and in no other file.
-- **Scene.** Round trips in a world with test components (derive-free ones plus `Parent`, `Name`, an `Option<Entity>`, a `Vec<Entity>`, a map keyed by `Entity`, a `Guid` field): write, read into a fresh world, write again, the two texts are identical, with the entity ids differing between loads; every envelope error (missing `id`, duplicate label, unknown label with a suggestion, parent cycle, duplicate component, unknown component type with suggestions); `ReferenceOutsideScene`; **atomic failure**: a scene whose last component fails leaves the world with the same entity count and no `SceneMember`; forward reference; `parent` option attaches roots; sibling order preserved; skipped components (`derived`, `Children`, no `ReflectComponent`); path convenience on and off; `asset_refs` deduplicated; comments are regenerated and ignored on read; CRLF input; a `.scene` for every golden. Entities that are not members are never written. The real plugin components (`Transform2d`, `Sprite`) round-trip in a facade test (jam-mvp.md Stage 2), not here, since `exitium_scene` has no edge to them (C1).
-- **Audio.** With the mock backend: play and the voice limit; stop and `is_playing`; bus volumes (dB conversion, `0` is silence); music crossfade and "same clip is a no-op"; **locked behaviour**: SFX dropped and counted, music remembered and started by `unlock`; `Unavailable` makes every call a no-op; `remove_clip` stops its voices; sample-rate conversion is kira's, so a test only checks the frame count and duration; an invalid clip is an error. Examples are not tests.
+- **Scene.** Round trips in a world with test components (derive-free ones plus `Parent`, `Name`, an `Option<Entity>`, a `Vec<Entity>`, a map keyed by `Entity`, a `Guid` field): write, read into a fresh world, write again, the two texts are identical, with the entity ids differing between loads; every envelope error (missing `id`, duplicate label, unknown label with a suggestion, parent cycle, duplicate component, unknown component type with suggestions); `ReferenceOutsideScene`; the unreflected-component warning, `strict` and `ignore_unreflected`, and the out-of-scope parent rule; **atomic failure**: a scene whose last component fails leaves the world with the same entity count and no `SceneMember`; forward reference; `parent` option attaches roots; sibling order preserved; skipped components (`derived`, `Children`, no `ReflectComponent`); path convenience on and off; `asset_refs` deduplicated; comments are regenerated and ignored on read; CRLF input; a `.scene` for every golden. Entities that are not members are never written. The real plugin components (`Transform2d`, `Sprite`) round-trip in a facade test (jam-mvp.md Stage 2), not here, since `exitium_scene` has no edge to them (C1).
+- **Audio.** With `AudioOutput::Null`: play and the voice limit; stop and `is_playing`; bus volumes (dB conversion, `0` is silence); music crossfade and "same clip is a no-op"; **locked behaviour**: SFX dropped and counted, music remembered and started by `unlock`; `Unavailable` makes every call a no-op; `remove_clip` stops its voices; sample-rate conversion is kira's, so a test only checks the frame count and duration; an invalid clip is an error. Examples are not tests.
 - **CLI.** `new`: file list and contents, name validation, overwrite refusal, the three engine-reference modes, and (toolchain present) `cargo check` and the wasm32 check of the output. `export`: the plan (command lists) with a fake `cargo`, `wasm-bindgen` and `wasm-opt` for both targets; a missing manifest file is reported in one list; the zip is deterministic and has `index.html` at the root; backslash paths never appear; the `wasm-bindgen` version check (equal, different, missing); `WASM_BINDGEN_VERSION` equals the workspace lock and the template; `--json` output is checked by a small test-only JSON validator; `serve` serves a file with the right MIME type and refuses non-loopback binds.
 - **Examples (manual, recorded in the PR).** Assets example on Windows and in Chrome: loads a PNG, WAV, OGG and font, prints states and decoded sizes, a failing file shows `Failed`. Audio example on Windows and in Chrome: a tone, a music loop with a crossfade, volume keys, and in Chrome nothing sounds until the first click.
 - **Platform.** `cargo build --workspace --target wasm32-unknown-unknown` passes for the three runtime crates; `--no-default-features` builds of assets and audio pass (Stage 1 shape).
@@ -602,12 +658,13 @@ Everything the implementation issues need from `Cargo.toml`, `Cargo.lock`, `deny
 - `deny.toml`: the `triple_buffer` exception, **only after the owner has decided** (open question 1). Intake runs `cargo deny check` and records the result.
 - `xtask`: the wasm step also builds `--examples` for `exitium_assets` and `exitium_audio` (proposed, optional).
 - `docs/decisions/`: the new ADR for the licence exception, if approved.
+- **Intake 1's `## Footprint` lists `Hotspots: Cargo.toml, Cargo.lock, deny.toml, docs/decisions/`.** jam-mvp.md's intake 1 block names the first three; this spec adds `docs/decisions/`, so the ADR number cannot collide with another PR. Both `deny.toml` and `docs/decisions/` are held only if the owner approves the exception; otherwise intake 1 drops `kira` and the audio lane waits on the `cpal` fallback decision.
 
 **Intake 2 (Stage 2 to 4).**
 
 - Workspace edges, with the optional-dependency and feature shape the platform crate uses (app-platform.md): 
   - `exitium_assets`: optional `exitium_reflect`, `exitium_serial`, `exitium_ecs`, `exitium_app`; `[features] manifest = ["dep:exitium_reflect", "dep:exitium_serial"]`, `plugin = ["manifest", "dep:exitium_ecs", "dep:exitium_app"]`, `default = ["plugin"]`. Stage 1 style use is `default-features = false`.
-  - `exitium_audio`: optional `exitium_reflect`, `exitium_ecs`, `exitium_app`; `plugin = [..]`, `default = ["plugin"]`.
+  - `exitium_audio`: optional `exitium_reflect`, `exitium_ecs`, `exitium_app`; `plugin = [..]`, `default = ["plugin"]`. **Dev-dependency `exitium_serial`** (AUP1's text round trip of the reflected types; a dev-dependency counts for R3, as in ui-mvp.md).
   - `exitium_scene -> exitium_core, exitium_ecs, exitium_reflect, exitium_serial` (normal). **No `exitium_app`** (D7). Dev-dependency: `criterion` only (its test components use the derives re-exported by `exitium_ecs` and `exitium_reflect`).
   - `exitium_cli -> exitium_serial` (normal), and `zip`. No dev-dependency. No `exitium_assets`, `exitium_reflect` or `exitium_scene`: the CLI reads the manifest and the project file through the syntax tree.
   - Facade: `exitium -> exitium_assets, exitium_audio, exitium_scene`.
@@ -719,16 +776,17 @@ Every issue states its Footprint in the full labelled form (`Edits`, `Governs`, 
 
 **AU1. `feat(audio): clips, buses and the AudioEngine over kira`** (about 550 lines). Blocked by `<intake-1>`, and by the owner's decision on open question 1 (recorded in intake 1).
 - Footprint: Edits `crates/exitium_audio/`; Governs none; Hotspots none; New crate edges none.
-- Adds `clip.rs`, `engine.rs`: `ClipData`, `insert_clip`, buses, `play`, `stop`, voice limit, state and `Unavailable`, mock-backend generic internals; creates `CLAUDE.md`.
+- Adds `clip.rs`, `engine.rs`: `ClipData`, `insert_clip`, buses, `play`, `stop`, voice limit, state and `Unavailable`, `AudioOutput::Null` and `advance_null`; creates `CLAUDE.md`.
 - Acceptance criteria:
-  - [ ] The play, stop, voice-limit, bus-volume and `Unavailable` tests run with the mock backend and no sound card.
+  - [ ] The play, stop, bus-volume and `Unavailable` tests run with `AudioOutput::Null` and no sound card; `advance_null` shows non-zero peak for a played clip and zero after it stops.
+  - [ ] **The voice limit is global**: with `max_voices = 4`, a fifth `play` fails whichever buses the first four used, and `AudioStats.voices` equals the number of live voices (a test mixes the three buses).
   - [ ] No kira type is public (a doc test of the public API names); the wasm32 build passes.
 
 **AU2. `feat(audio): music slot, crossfade, the web unlock and stats`** (about 450 lines). Blocked by `<intake-1>`, AU1.
 - Footprint: Edits `crates/exitium_audio/`; Governs none; Hotspots none; New crate edges none.
 - Adds `play_music`, `stop_music`, `unlock`, pending music while `Locked`, `update`, `AudioStats`.
 - Acceptance criteria:
-  - [ ] The crossfade, same-clip, locked and unlock tests (a test hook simulates the wasm32 `Locked` start on the host).
+  - [ ] The crossfade, same-clip, locked and unlock tests (`AudioConfig { output: Null, start_locked: Some(true) }` simulates the web's `Locked` start on the host).
   - [ ] `play` meets 3 µs.
 
 **AU3. `feat(audio): benchmarks and audio_demo example for Windows and Chrome`** (about 400 lines). Blocked by `<intake-1>`, AU2.
@@ -744,7 +802,7 @@ Every issue states its Footprint in the full labelled form (`Edits`, `Governs`, 
 - Footprint: Edits `crates/exitium_audio/`; Governs none; Hotspots none; New crate edges none.
 - Adds `plugin/` as in "Plugin": `Audio`, `ClipStore`, `AudioSettings`, `AudioStats`, the four events, the three systems, `play_guid`.
 - Acceptance criteria:
-  - [ ] A headless-app test (mock backend) plays through each event, changes a volume through `AudioSettings`, and reads `AudioStats`; the reflected types round-trip through the text format.
+  - [ ] A headless-app test (`AudioOutput::Null`) plays through each event, changes a volume through `AudioSettings`, and reads `AudioStats`; the reflected types round-trip through the text format (`exitium_serial` is a dev-dependency of this crate, added by intake 2).
   - [ ] `--no-default-features` builds the Stage 1 shape.
 
 ### Stage 2: scene lane (`exitium_scene`, Footprint: Edits `crates/exitium_scene/`; Governs none; Hotspots none; New crate edges none)
@@ -760,9 +818,10 @@ The scene crate does not depend on `exitium_app`, so SC1 may start right after i
 
 **SC2. `feat(scene): write_scene`** (about 550 lines). Blocked by `<intake-2>`, SC1.
 - Footprint: Edits `crates/exitium_scene/`; Governs none; Hotspots none; New crate edges none.
-- Adds `write.rs`, `refs.rs` (write side of `SceneRefs`), `error.rs`: member collection, pre-order, skip rules, component order, labels, `ReferenceOutsideScene`, asset path comments, re-indent.
+- Adds `write.rs`, `refs.rs` (write side of `SceneRefs`), `error.rs`: member collection, pre-order, silent and reported skip rules, `SavedScene` with `SceneWarning`, `strict` and `ignore_unreflected`, component order, labels, `ReferenceOutsideScene`, out-of-scope parents, asset path comments, re-indent.
 - Acceptance criteria:
-  - [ ] Golden files for a small scene, a hierarchy, a map keyed by `Entity` and an asset comment; non-members never written; skipped components absent.
+  - [ ] Golden files for a small scene, a hierarchy, a map keyed by `Entity` and an asset comment; the goldens equal the examples in this spec for the same components; non-members never written; derived components absent.
+  - [ ] A component without `ReflectComponent` gives one `UnsavedComponent` warning per type with the entity count, an error under `strict`, and nothing when listed in `ignore_unreflected`; a root whose parent is not a member is written `parent: None` and warns in `SaveScope::Scene` only.
   - [ ] Output is identical across two writes and across entity-id churn; `exitium_scene/write/10000` meets budget.
 
 **SC3. `feat(scene): ParsedScene (syntax, envelope and label checks)`** (about 450 lines). Blocked by `<intake-2>`, SC2.
@@ -772,11 +831,11 @@ The scene crate does not depend on `exitium_app`, so SC1 may start right after i
   - [ ] Every envelope error of the Test plan with its span and, for `UnknownLabel`, up to 3 suggestions.
   - [ ] A file in every accepted shape (defaults omitted, CRLF, comments) parses; `exitium_scene/parse/10000` syntax-only meets budget.
 
-**SC4. `feat(scene): instantiate into a world (atomic, hierarchy, asset refs)`** (about 550 lines). Blocked by `<intake-2>`, SC3, and the hierarchy helper (#49) and `ReflectComponent` (#50) from Stage 1.
+**SC4. `feat(scene): instantiate into a world (atomic, hierarchy, asset refs)`** (about 550 lines). Blocked by `<intake-2>`, SC3, and the Stage 1 hierarchy helpers (#49), `Commands` (#45, with the public `Commands::new` and `CommandQueue::apply` adjustment) and `ReflectComponent` (#50).
 - Footprint: Edits `crates/exitium_scene/`; Governs none; Hotspots none; New crate edges none.
 - Adds `instantiate.rs` and the read side of `SceneRefs`: the load algorithm, `SceneInstance`, `InstantiateOptions`, `despawn_scene`, the path convenience.
 - Acceptance criteria:
-  - [ ] The "atomic failure", forward reference, parent, sibling-order, duplicate component, unknown type and path-convenience tests.
+  - [ ] The "atomic failure", forward reference, parent, sibling-order, duplicate component, unknown type and path-convenience tests. Hierarchy is applied through a local `CommandQueue` before return: after `instantiate` and after `despawn_scene` returns, `Parent` and `Children` are consistent and the queue is empty.
   - [ ] Write, read into a fresh world, write gives identical text.
   - [ ] `instantiate/10000` meets budget.
 
@@ -789,17 +848,19 @@ The scene crate does not depend on `exitium_app`, so SC1 may start right after i
 
 ### Stage 2: facade glue (Footprint: Edits none; Governs none; Hotspots `crates/exitium/`; New crate edges none)
 
-These four run alone, one after another, and after the plugin lanes they glue (R2, R3). Their order relative to the other specs' facade issues (app-platform.md F1 to F3, render-v1.md G1 and I18, ui-mvp.md, physics) is the orchestrator's.
+These four run alone, one after another, and after the plugin lanes they glue (R2, R3). Their order relative to the other specs' facade issues (app-platform.md F1 to F3, render-v1.md G1 and I18, ui-mvp.md, physics) is the orchestrator's; the `Blocked by` lines below are only what each glue needs.
 
-**FA1. `feat(exitium): asset feeding glue for render and UI`** (about 350 lines). Blocked by `<intake-2>`, AP2, render-v1.md I16 (`TextureStore`, `FontStore`).
+**FA1. `feat(exitium): asset feeding glue for render and UI`** (about 350 lines; this is render-v1.md's G1b, filed once). Blocked by `<intake-2>`, AP2, render-v1.md I16 (`TextureStore`, `FontStore`) and I18, and ui-mvp.md U11 (`UiPlugin`, the `UiTree` resource and `paint_revision`).
 - Footprint: Edits none; Governs none; Hotspots `crates/exitium/`; New crate edges none.
 - Acceptance criteria:
   - [ ] A headless test loads a generated PNG and a font through `MemorySource` and sees `TextureStore::size(guid)` and the font after `ASSETS`; `ImageSettings` reach `TextureDesc`; a `Sprite.image` set after load is requested once; a failed asset logs once.
+  - [ ] A UI image and a UI font `Guid` in the `UiTree` are requested once, and a frame with an unchanged `paint_revision` does not walk the draw list (a counter test).
+  - [ ] `exitium/glue/request_scan/20000` (20,000 unchanged sprites, then 100 changed) stays within the budget; the system uses `Changed<..>` filters, not a full query.
 
 **FA2. `feat(exitium): asset feeding glue for audio and the web unlock`** (about 300 lines). Blocked by `<intake-2>`, AUP1, FA1, app-platform.md PP1 (`InputState`).
 - Footprint: Edits none; Governs none; Hotspots `crates/exitium/`; New crate edges none.
 - Acceptance criteria:
-  - [ ] A headless test with the mock backend plays a loaded clip through `PlayAudio`; an injected key press calls `unlock` once (`Locked` becomes `Ready`).
+  - [ ] A headless test builds `AudioPlugin` with `AudioOutput::Null` (no kira type in the test), plays a loaded clip through `PlayAudio`, and asserts the peak from `advance_null` is above zero; with `start_locked: Some(true)` an injected key press calls `unlock` once (`Locked` becomes `Ready`) and not again.
 
 **FA3. `feat(exitium): scene loading glue (LoadScene, SceneLoaded)`** (about 450 lines). Blocked by `<intake-2>`, SC5, FA1.
 - Footprint: Edits none; Governs none; Hotspots `crates/exitium/`; New crate edges none.
@@ -808,17 +869,22 @@ These four run alone, one after another, and after the plugin lanes they glue (R
 
 **FA4. `feat(exitium): re-export the assets, audio and scene APIs`** (about 200 lines; high-risk review: facade API). Blocked by `<intake-2>`, FA3.
 - Footprint: Edits none; Governs none; Hotspots `crates/exitium/`; New crate edges none.
-- Adds `exitium::assets`, `exitium::audio` and `exitium::scene` with the complete lists of public names from this spec (a compile test names every one), and adds `AssetPlugin`, `AssetGluePlugin`, `AudioPlugin`, `AudioGluePlugin` and `ScenePlugin` to `DefaultPlugins`.
+- Adds three modules and **this complete list** (a compile test names every item; each is one `pub use`):
+  - `exitium::assets`: `AssetPath`, `AssetKind`, `AssetError`, `AssetInfo`, `ImageFilter`, `ImageSettings`, `AssetRegistry`, `AssetConfig`, `AssetLimits`, `AssetServer`, `AssetState`, `AssetStats`, `Payload`, `DecodedImage`, `DecodedAudio`, `Loaded`, `Manifest`, `ManifestState`, `AssetPlugin`, `AssetStatus`, `AssetFailure`, `AssetLoaded`, `AssetFailed`, `AssetGluePlugin`, the set `sets::ASSETS`, and the decoders as `decode::{decode_png, encode_png, decode_wav, decode_ogg, validate_font, decode_text}`.
+  - `exitium::audio`: `AudioEngine`, `AudioConfig`, `AudioOutput`, `AudioState`, `AudioError`, `AudioStats`, `Bus`, `ClipData`, `ClipId`, `Voice`, `PlayOptions`, `MusicOptions`, `AudioPlugin`, `Audio`, `ClipStore`, `AudioSettings`, `PlayAudio`, `StopAllAudio`, `PlayMusic`, `StopMusic`, `AudioGluePlugin`.
+  - `exitium::scene`: `Name`, `SceneId`, `SceneMember`, `SceneInfo`, `Scenes`, `ParsedScene`, `InstantiateOptions`, `SceneInstance`, `SaveScope`, `SaveOptions`, `SavedScene`, `SceneWarning`, `SceneErrors`, `SceneError`, `SceneErrorKind`, `ValidationReport`, `write_scene`, `validate_scene`, `despawn_scene`, `mark_member`, `register_types`, and the facade-defined `ScenePlugin`, `LoadScene`, `LoadMode`, `SceneLoaded`, `SceneLoadFailed` and the constant `INTERNAL_COMPONENTS`.
+  - **Kept private** (not re-exported; the editor and tools depend on the crates directly): `exitium_assets::{source (AssetSource, FsSource, MemorySource), native, edit, web}`, the scene crate's `label` and `SceneRefs`, the parser internals, and every kira type and backend of `exitium_audio` (there is none in its public API).
+  - Adds `AssetPlugin`, `AssetGluePlugin`, `AudioPlugin`, `AudioGluePlugin` and `ScenePlugin` to `DefaultPlugins`.
 - Acceptance criteria:
-  - [ ] Every name above is reachable under its module and no kira type is reachable; `cargo doc` has no broken re-export.
+  - [ ] Every name above is reachable as `exitium::<module>::<Name>` and every kept-private name is not; no kira type is reachable (the compile test also builds an `AudioPlugin` with `AudioOutput::Null` using only `exitium::` paths); `cargo doc` has no broken re-export; high-risk review (facade API).
 
 ### Stage 4: CLI lane (`exitium_cli`, Footprint: Edits `crates/exitium_cli/`; Governs none; Hotspots none; New crate edges none)
 
-**C1. `feat(cli): argument parsing, the project file and exitium new`** (about 550 lines). Blocked by `<intake-2>`, FA4, SC5.
+**C1. `feat(cli): argument parsing, the project file and exitium new`** (about 550 lines). Blocked by `<intake-2>`, SC5, and the facade chain the template's `main.rs` compiles against: FA4 (the assets, audio and scene re-exports and their `DefaultPlugins` entries), app-platform.md F3 (`App`, `DefaultPlugins`, the `Startup` schedule re-exports), render-v1.md I18 and G1a to G1d (`RenderPlugin` and the window and UI glue that `DefaultPlugins` includes), the facade sample-game issue (jam-mvp.md Stage 2, item 5), and the Stage 3 facade hook issue of #110 (the `editor` feature of the game binary, C2). Stage 4 starts after the Stage 3 exit, so all of these have merged; they are listed so the template is never generated against a facade that lacks them.
 - Footprint: Edits `crates/exitium_cli/`; Governs none; Hotspots none; New crate edges none.
 - Adds `args.rs`, `project.rs`, `new.rs` and the embedded `template/`; creates `CLAUDE.md`.
 - Acceptance criteria:
-  - [ ] The "CLI" `new` tests; the generated project passes `cargo check` and the wasm32 check when the toolchain is present; the project file is read through the syntax tree.
+  - [ ] The project file round trips the six fields above, including `export_features`; the "CLI" `new` tests; the generated project passes `cargo check` and the wasm32 check when the toolchain is present; the project file is read through the syntax tree.
 
 **C2. `feat(cli): export staging, manifest checks and the deterministic zip`** (about 500 lines). Blocked by `<intake-2>`, C1.
 - Footprint: Edits `crates/exitium_cli/`; Governs none; Hotspots none; New crate edges none.
@@ -852,7 +918,10 @@ Applied by the architect when this spec merges (the bullets are the contract):
 - **app-platform.md open question 3 (derived components):** resolved. The scene skips `custom(derived = true)`, `SceneMember`, `Parent` and `Children` as described under "Skipped on save".
 - **ui-mvp.md open question 8 (UI persistence):** a UI tree is a `.ui` `Text` asset holding a `UiNodeDesc` in the text form; the UI plugin parses it. Scenes carry no UI nodes.
 - **jam-mvp.md:** its known-wiring line "scene -> core, ecs, reflect, serial, app" is refined to drop `app` (D7), so the scene lane may start right after intake 2. Its Stage 2 count (scene about 2 PRs, plugins about 8) is replaced by this spec's list: assets 3, audio 1, scene 5, facade 4 in Stage 2; the scene lane (5) is the longest and runs beside the spine, so the Stage 2 critical path is unchanged. The roadmap's "known" Stage 1 counts for assets and audio become 7 and 3.
-- **#110 (command bus, editor, MCP):** implements the tools and panels in "MCP / editor surface", must call `mark_member` from its spawn command, must let a command declare "no undo", and starts the `exitium` binary for the three ops tools. Its export tool is blocked by C3 and C4.
+- **#110 (command bus, editor, MCP):** implements the tools and panels in "MCP / editor surface", including the generic asset-picker inspector widget keyed on `custom("widget") == "asset"` and `custom("kind")`, must call `mark_member` from its spawn command, must let a command declare "no undo", and starts the `exitium` binary for the three ops tools. Its export tool is blocked by C3 and C4.
 - **reflect derive:** `SceneMember` and `GlobalTransform2d` rely on a type-level `custom(derived = true)` attribute, which app-platform.md open question 3 already asks the derive to allow.
+- **#45 (`Commands`) and #49 (hierarchy):** `Commands::new(&mut CommandQueue, &Entities)` and `CommandQueue::apply(&mut self, &mut World) -> ApplyReport` are public, so a function that holds `&mut World` (scene `instantiate` and `despawn_scene`) can run the `set_parent` and `despawn_recursive` helpers through a local queue and apply it before returning. Additive; no `World`-level variants.
+- **render-v1.md I14 (components) and G1b:** `Sprite`, `Camera2d` and `Text` get `#[reflect(default = ..)]` on every field, using the defaults the spec's field comments already state (anchor (0.5, 0.5), tint white, `mask` 1, `visible` true, `layers` 1, `zoom` 1.0, `viewport` (0,0)-(1,1), `scaling` `PixelsPerUnit(1.0)`, `active` true, `align` Left, `wrap` None) and the zero, false or `None` value otherwise, so a hand-written scene may omit them. `Sprite.image` and `Text.font` carry `custom(widget = "asset", kind = "image")` and `custom(widget = "asset", kind = "font")`. G1b is FA1 of this spec: one issue, with `Blocked by` extended by ui-mvp.md U11.
+- **ui-mvp.md U12 (reflection derives):** the `Guid` fields of image and font data (`ImageData.image`, the `font` fields) carry the same `custom(widget = "asset", kind = ..)` attribute.
 - **#49 (hierarchy):** optionally marks `Children` with `custom(derived = true)`; until then the scene's name list covers it.
 - **intake 1 and intake 2:** add the lists in "Wiring for the intake PRs", including the `ENGINE_CRATES` edit and the licence decision.

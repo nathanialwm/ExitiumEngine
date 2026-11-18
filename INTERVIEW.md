@@ -28,7 +28,7 @@ Later consumers:
 |---|---|---|---|
 | 1 | First milestone | Ship a full incremental roguelite (Glutton): heavy UI, static hand-drawn portraits | The **UI system** and the **incremental sim/save stack** are the critical path. Pixel art, isometric, physics and destruction are not on Glutton's path. |
 | 2 | Editor | Standalone editor app | Separate `exitium_editor` binary. Shipped games contain no editor code. |
-| 3 | Platforms | Windows, Linux, macOS, Web now; mobile later | Use wgpu (WebGPU with a WebGL2 fallback). Keep platform code behind traits so mobile can be added later. |
+| 3 | Platforms | Windows, Linux, macOS, Web now; mobile later | Use wgpu. The Jam MVP web build uses wgpu's WebGPU backend only; a WebGL2 fallback is deferred, not dropped (`docs/specs/jam-mvp.md`, `docs/specs/render-v1.md`). Keep platform code behind traits so mobile can be added later. |
 | 4 | Audience | Owner only for now; make it extensible toward a public release | No doc-maintenance burden now, but keep public API boundaries clean and use a permissive-ready license structure. |
 | 5 | Rust experience / feel | Basic Rust. Take the best ideas from Godot, Unity, Unreal and Bevy, with its own identity | The code must stay readable and well commented at module boundaries. Agents do most of the writing, and the owner needs to be able to review it. |
 | 6 | ECS | Custom archetype ECS (recommended) | Build `exitium_ecs`: SoA archetype storage, parallel system scheduling, change detection, built-in reflection hooks. |
@@ -133,7 +133,7 @@ These came out of the answers and need a decision, a spike, or at least awarenes
 
 **R5. Web target constraints.**
 - Threads on the web need `SharedArrayBuffer`, which requires cross-origin isolation headers. itch.io supports this as an opt-in option.
-- WebGPU isn't available in every browser, so a WebGL2 fallback limits compute shaders on the web.
+- WebGPU isn't available in every browser. The Jam MVP web build uses wgpu's WebGPU backend only, so browsers without WebGPU are unsupported for now. A WebGL2 fallback is deferred, not dropped, and would limit compute shaders on the web (`docs/specs/jam-mvp.md`, `docs/specs/render-v1.md`).
 - Building Luau for WASM through `mlua` needs an early spike.
 
 The engine must degrade gracefully, e.g. a single-threaded scheduler and no compute path on the web.

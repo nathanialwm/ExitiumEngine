@@ -12,7 +12,7 @@ The crate ships in two stages (Jam MVP contract, #107):
 
 | Stage | What | Depends on |
 |---|---|---|
-| **1. Standalone** | `Renderer`, `DrawList`, `Camera`, textures, text, debug draw, capture. No ECS: a plain Rust program (or test) fills a `DrawList` and calls `render`. | `exitium_core`, `wgpu`, `glyphon`, `bytemuck` |
+| **1. Standalone** | `Renderer`, `DrawList`, `Camera`, textures, text, debug draw, capture, and a windowed Windows and Chrome example. No ECS: a plain Rust program (or test) fills a `DrawList` and calls `render`. | `exitium_core`, `wgpu`, `glyphon`, `bytemuck` |
 | **2. Plugin** | A `plugin` module: the `Sprite`, `Camera2d` and `Text` components, extraction from the ECS into a `DrawList`, settings, stats and a screenshot service. | Stage 1, `exitium_ecs`, `exitium_app`, `exitium_reflect` |
 
 The design is a **plan/execute split**. Everything that decides *what* to draw (cull, sort, batch, instance data, camera math, text layout keys) is plain CPU code that needs no GPU, so it is unit-tested and benchmarked on CI without an adapter. Only the last step (upload, encode, submit) touches `wgpu`.
@@ -54,8 +54,11 @@ crates/exitium_render/
     capture.rs       CaptureId, Capture, row-padding removal, BGRA fix-up
     renderer.rs      Renderer: frame orchestration (surface, passes, submit, present)
     stats.rs         RenderStats
-    plugin/          Stage 2: mod.rs, components.rs, extract.rs, stores.rs, screenshot.rs, settings.rs
-  benches/batch.rs   (I4), benches/text.rs (I9), benches/extract.rs (I14)
+    lib.rs also has `pub use wgpu;`, so `RendererConfig` and the public wgpu types need no second dependency in a game
+    plugin/          Stage 2: mod.rs, components.rs, window.rs (RenderWindow, sets), extract.rs, stores.rs, screenshot.rs, settings.rs
+  benches/batch.rs   (I4), benches/text.rs (I9), benches/extract.rs (I15); empty files created by intake-1
+  examples/render_window.rs   (I12) the Stage 1 windowed and web example, no ECS
+  tests/common/mod.rs   (I1) GPU test helper: software adapter, error handler, blocking readback with BGRA swap
   tests/             headless GPU tests, golden images (tests/golden/*.rgba8)
 ```
 
@@ -271,7 +274,7 @@ pub struct TextStyle {
     pub color: Color,               // linear, tint of the glyphs
     pub align: TextAlign,           // default Left
     pub wrap: TextWrap,             // default None
-    pub max_width: Option<f32>,     // wrap width in the item's space; None = unbounded
+    pub max_width: Option<f32>,     // layout width in the item's space; None = unbounded. With wrap None it is the ALIGNMENT width: no wrapping, Center and Right align inside it
 }
 pub struct TextDraw<'a> {
     pub text: &'a str, pub style: TextStyle,
@@ -307,7 +310,7 @@ impl DebugDraw {
 }
 ```
 
-Lines have a **constant pixel width** (default 1 px, set per call) whatever the zoom. A line is one instance of 24 bytes: `a: Float32x2`, `b: Float32x2`, `color: Unorm8x4` (sRGB-encoded), `width: Float32`. The endpoints are already in physical pixels (the camera is applied on the CPU when the pass is built, as for sprites) and the vertex shader expands the segment to a quad perpendicular to it. `circle` and `polyline` are tessellated into segments on the CPU: a circle uses `clamp(ceil(radius_px / 4), 8, 64)` segments. Filled rectangles are not debug draws: use a `SpriteDraw` with `texture: None`.
+Lines have a **constant pixel width** (default 1 px, set per call) whatever the zoom. A line is one instance of 24 bytes: `a: Float32x2`, `b: Float32x2`, `color: Unorm8x4` (sRGB-encoded), `width: Float32`. The endpoints are already in physical pixels (the camera is applied on the CPU when the pass is built, as for sprites) and the vertex shader expands the segment to a quad perpendicular to it. `circle` and `polyline` are tessellated into segments on the CPU: a circle uses `clamp(ceil(radius_px / 4), 8, 64)` segments. Filled rectangles are not debug draws: use a `SpriteDraw` with `texture: None`. The cap is `MAX_DEBUG_LINES = 1 << 18` per frame summed over passes (physics emits up to 100,000 by default); extra lines are dropped and counted in `RenderStats::dropped`.
 
 ### Render to texture and capture (MCP screenshots)
 
@@ -350,11 +353,40 @@ Stage 2 is a `plugin` module in the same crate. The exact `App`, `Plugin`, sched
 | Where | What |
 |---|---|
 | Components | `Sprite`, `Camera2d`, `Text` (all `Reflect`, below). Registered with the reflection registry. |
-| Resources | `Renderer` (not reflected), `DrawList`, `DebugDraw`, `TextureStore`, `FontStore`, `Screenshots`, `SceneViewTarget` (not reflected); `RenderSettings`, `RenderStats`, `SceneView` (reflected). |
-| **Startup** | `init_renderer`: gets the window from the platform (D2 below) and builds the `Renderer`: `new_blocking` on native, a future spawned with `wasm_bindgen_futures::spawn_local` on the web. Headless apps use `Renderer::headless`. |
-| **FixedUpdate** | Nothing. Rendering is variable-rate. |
-| **Update** | `poll_renderer_init` (web: moves the finished `Renderer` into its resource), `apply_resize` (window size and scale factor to `Renderer::resize`), `apply_render_settings`, `poll_captures`. |
-| **Render extraction** (runs after transform propagation, once per frame) | `extract_cameras` (cameras and, when enabled, the scene view to `CameraPass`es), `extract_draws` (sprites and text to `DrawList`), then any glue system that appends to `DrawList` or `DebugDraw` (facade, below), then `render_frame` (ordered after all of them: renders, presents, fulfills screenshots, clears the lists). |
+| Resources | `Renderer` (not reflected), `RenderWindow` (not reflected, the window handoff below), `DrawList`, `DebugDraw`, `TextureStore`, `FontStore`, `Screenshots`, `CameraViews`, `SceneViewTarget` (not reflected); `RenderSettings`, `RenderStats`, `SceneView` (reflected). `RenderPlugin::build` inserts every one of them (empty or default) at once, as app-platform.md requires, so facade glue can write them as early as `PreStartup`. |
+| **System set** | Render exports one: `exitium_render::plugin::sets::RENDER_WINDOW`, a `const SystemSet` in `First` (below). It also uses the app's `EXTRACT` and `RENDER` sets (`exitium_app::sets`). |
+| **PreStartup** | Nothing from render. The facade glue copies the platform window into `RenderWindow` here. |
+| **Startup** | `init_renderer`: builds the `Renderer` reading **only `RenderWindow`**: `new_blocking` on native, a future spawned with `wasm_bindgen_futures::spawn_local` on the web, `Renderer::headless` when `RenderPlugin::headless` is set. With no window target yet it does nothing and logs once. |
+| **First**, set `RENDER_WINDOW` (after the app's `INPUT`) | `poll_renderer_init` (web: moves the finished `Renderer` into its resource; native: retries the init when a window target appears late), `apply_resize` (reads **only `RenderWindow`**: physical size and scale factor to `Renderer::resize`), `apply_render_settings`, `poll_captures`. |
+| **FixedUpdate**, **Update** | Nothing. Rendering is variable-rate. |
+| **Extract**, set `EXTRACT` | `extract_cameras` (cameras and, when enabled, the scene view to `CameraPass`es, and the `CameraViews` resource), `extract_draws` (sprites and text to `DrawList`), then any facade glue that appends to `DrawList` or `DebugDraw` (assets, physics debug, UI). |
+| **Extract**, set `RENDER` (after `EXTRACT`, set by the app) | `render_frame`: renders, presents, fulfills screenshots, clears the lists. |
+
+The app runs `PostUpdate` (transform propagation, physics interpolation) before `Extract` in every frame, so extraction reads settled `GlobalTransform2d` values.
+
+**`RenderWindow`, the window handoff.** Render names no platform type and the platform names no render type (cross-spec ruling (a)). `RenderWindow` is the render-owned meeting point, and the **facade glue** is the only code that writes it. It matches what app-platform.md exposes: `PlatformWindow` is `Clone + Send + Sync + 'static` and implements `HasWindowHandle` and `HasDisplayHandle`, so it converts into `wgpu::SurfaceTarget<'static>`; the platform plugin inserts `PrimaryWindow(PlatformWindow)` and `WindowInfo { physical_size, scale_factor, focused }` before `PreStartup`.
+
+```rust
+/// Raw window and display handles, the physical size and the scale factor. Render reads only this.
+#[derive(Resource, Default)]
+pub struct RenderWindow { /* target: Option<wgpu::SurfaceTarget<'static>>, size: UVec2, scale_factor: f32 */ }
+impl RenderWindow {
+    /// Once, from the glue: `window.set_target(primary_window.0.clone())`. Anything that converts
+    /// into a `SurfaceTarget<'static>` (an `Arc<winit::window::Window>`, a `PlatformWindow`) works.
+    pub fn set_target(&mut self, window: impl Into<wgpu::SurfaceTarget<'static>>);
+    /// Every frame, from the glue, copied from the platform's `WindowInfo`. PHYSICAL pixels and the scale factor.
+    pub fn set_size(&mut self, physical_size: UVec2, scale_factor: f32);
+    pub fn size(&self) -> UVec2;  pub fn scale_factor(&self) -> f32;  pub fn has_target(&self) -> bool;
+    // the plugin takes the target out exactly once, when it builds the Renderer
+}
+```
+
+- **Glue (facade, G1a).** `PreStartup`: `set_target` from `Option<Res<PrimaryWindow>>`. `First`, `after_set(INPUT)` and `before_set(RENDER_WINDOW)`: `set_size` from `Option<Res<WindowInfo>>`. Both read `Option<Res<..>>` and do nothing when it is `None`, so a headless app (no window, no renderer) runs a frame without panicking. Ordering the glue before `RENDER_WINDOW` is what makes a resize reach the renderer in the same frame.
+- **Units.** `RenderWindow` is physical, like `WindowInfo` and like `Renderer::resize`. Logical pixels (physical divided by the scale factor) are what `Space::Screen` and `CameraView::screen_to_world` use, and what `InputState::cursor_logical` holds, so the cursor-to-world glue passes `cursor_logical` and never the physical position (a physical value would be wrong by the scale factor on a 1.5x display).
+- **Zero size.** A zero width or height is legal at startup (a web canvas not yet laid out): `Renderer::new` accepts it, and `render` returns `Skipped(Minimized)` until a non-zero size arrives.
+- **`Send + Sync`.** `RenderWindow` holds a `SurfaceTarget<'static>`, which wgpu declares `Send + Sync`; I14 pins it with a compile-time assertion next to the one on `Renderer`, built for native and for wasm32. app-platform.md pins `PlatformWindow: Send + Sync` on wasm32 too (its PL3), and names the ECS non-send path as the fallback if winit's web window is not.
+- **`CameraViews`** (not reflected): rewritten by `extract_cameras` each frame with the resolved `CameraView` of every active camera, sorted by `order`, and kept after `render_frame` (it is not a per-frame list that gets cleared). `CameraViews::main()` is the main camera of the "default camera" rule below. The cursor-to-world glue (app-platform F1) reads it in `First` and so uses the camera as of the previous frame, which is what is on screen.
+
 
 **`RenderPlugin`.** The one type a game adds to its app:
 
@@ -367,7 +399,7 @@ impl Default for RenderPlugin { /* config default, headless false */ }
 impl Plugin for RenderPlugin { /* signature from #106; registers every row of the table above */ }
 ```
 
-I13 creates `RenderPlugin` and registers the types and resources; I14 adds the extraction systems to its `build`; I15 adds the init, resize and store systems; I16 adds the screenshot service. Each issue edits `plugin/mod.rs` in turn (one issue at a time in this crate).
+I14 creates `RenderPlugin` and registers the types and resources; I15 adds the extraction systems to its `build`; I16 adds the window, init, resize and store systems; I17 adds the screenshot service. Each issue edits `plugin/mod.rs` in turn (one issue at a time in this crate).
 
 ```rust
 #[derive(Component, Reflect, Clone)]
@@ -403,29 +435,47 @@ pub struct SceneView {
 }
 ```
 
-- **Why separate component types.** Stage 1 types (`SpriteDraw`, `Camera`, `TextDraw`) hold resolved data (a `Handle<Texture>`, a world `Affine2`) and need no reflection, so Stage 1 depends on `exitium_core` only. The components hold authoring data (a `Guid`, no transform) that reflection can persist (`Handle<T>` is not reflectable, reflect-model spec). Extraction is the explicit conversion. `Camera2d` has no `center` or `rotation`: they come from the entity's `GlobalTransform2d`, so a camera can follow a parent. The enums used as component fields (`Scaling`, `TextAlign`, `TextWrap`) are Stage 1 types; the Stage 2 issue I13 adds `#[derive(Reflect)]` to them, which is possible because the crate depends on `exitium_reflect` from Stage 2 on.
+- **Why separate component types.** Stage 1 types (`SpriteDraw`, `Camera`, `TextDraw`) hold resolved data (a `Handle<Texture>`, a world `Affine2`) and need no reflection, so Stage 1 depends on `exitium_core` only. The components hold authoring data (a `Guid`, no transform) that reflection can persist (`Handle<T>` is not reflectable, reflect-model spec). Extraction is the explicit conversion. `Camera2d` has no `center` or `rotation`: they come from the entity's `GlobalTransform2d`, so a camera can follow a parent. The enums used as component fields (`Scaling`, `TextAlign`, `TextWrap`) are Stage 1 types; the Stage 2 issue I14 adds `#[derive(Reflect)]` to them, which is possible because the crate depends on `exitium_reflect` from Stage 2 on.
 - **Needs from `GlobalTransform2d`** (D1): a 2D affine (translation, rotation, scale) in world space, already propagated through the hierarchy when the extraction schedule runs. The render crate does not use a z coordinate from the transform: order is `layer` and `z` on the component.
 - **`extract_cameras`** emits one `CameraPass` per active `Camera2d` (target: surface, view from the entity's `GlobalTransform2d`). When `SceneView.enabled`, it also emits one pass built from `SceneView` into the render texture held by `SceneViewTarget` (created and resized by the editor through `Renderer::create_render_texture`); with no `SceneViewTarget` texture, the scene view is ignored.
 - **`extract_draws`** iterates `(&Sprite, &GlobalTransform2d)` and `(&Text, &GlobalTransform2d)`, resolves `Guid` to `Handle<Texture>` / `FontId` through `TextureStore` and `FontStore` (hash lookups, cached per frame for repeats), skips `visible == false`, and pushes `SpriteDraw`/`TextDraw`. Missing textures draw nothing and count `missing_textures`. It rebuilds the list every frame; a retained instance cache is a later optimization.
-- **`TextureStore` and `FontStore`** hold `Guid -> Handle<Texture>` and `Guid -> FontId`, plus an `insert(guid, ImageData, TextureDesc)` and `insert_font(guid, bytes)` that call `create_texture` and `load_font` on the renderer. Render has no dependency on `exitium_assets`. **Cross-spec ruling (a):** runtime crates have no edges between them, and the glue that connects them lives in the `exitium` facade. That covers asset loading into these stores, physics debug drawing (a facade system reads the physics world and writes `DebugDraw`) and UI drawing (a facade system turns the UI tree's draw data into `DrawList` entries, and hands the UI a text-measure closure that calls `Renderer::measure_text`). Those systems are the separate issue G1, filed after the other specs merge (D3, D4).
+- **`TextureStore` and `FontStore`** hold `Guid -> Handle<Texture>` and `Guid -> FontId`, plus an `insert(guid, ImageData, TextureDesc)` and `insert_font(guid, bytes)` that call `create_texture` and `load_font` on the renderer, and `TextureStore::size(guid) -> Option<UVec2>` (texture pixels, unscaled) for the UI's image measure. Render has no dependency on `exitium_assets`. **Cross-spec ruling (a):** runtime crates have no edges between them, and the glue that connects them lives in the `exitium` facade. That covers asset loading into these stores, physics debug drawing (a facade system reads the physics world and writes `DebugDraw`) and UI drawing (a facade system turns the UI tree's draw data into `DrawList` entries, and hands the UI a text-measure closure that calls `Renderer::measure_text`). Those systems are the separate issue G1 (four slices, below), filed after the other specs merge (D2 to D4). Their data contracts are fixed by the merged specs and mapped in "Handoffs from the other runtime specs".
 - **`Screenshots`** (the plain Rust service #110 builds the screenshot tool on): `request(ScreenshotRequest { camera: Option<Entity>, view: Option<ViewOverride>, size: UVec2, include_debug: bool }) -> Result<ScreenshotId, RenderError>` and `take(id) -> Option<Result<Capture, RenderError>>`, with `ViewOverride { center: Vec2, rotation: f32, zoom: f32 }`. `render_frame` fulfills pending requests in the frame after the request, through a pooled render texture per distinct size. It works in headless apps.
   - **Default camera.** `camera: None` means the **main camera**: the active `Camera2d` with the lowest `order` (ties: lowest entity index). If there is none, the `SceneView` is used when `enabled`. If there is neither, `request` returns `RenderError::NoCamera`.
   - **View override.** `view: Some(v)` replaces the center, rotation and zoom of the chosen camera (keeping its `scaling`, `pixel_perfect` and `layers`), or, when no camera exists, applies to `Scaling::PixelsPerUnit(1.0)` with all layers. An agent can therefore frame any part of the world without editing a camera.
   - **Limits.** `size` is at most 2048 x 2048 per side (larger returns `RenderError::Capture("size")`; the lower tool maximum keeps the base64 PNG within a stdio message, and #110 must halve the size or fail when the encoded payload would exceed 8 MiB). At most 2 requests may be pending (the renderer's `MAX_PENDING_CAPTURES`); a third returns `RenderError::CaptureBusy`.
 - **`RenderSettings`** (reflected resource): `vsync: bool`, `clear_color: Color`, `debug_draw: bool` (read by glue such as the physics debug system), `show_bounds: bool`. Changing it takes effect next frame.
-- **Interpolation.** v1 draws `GlobalTransform2d` as of the last propagation. With the fixed step at 60 Hz and a 144 Hz display, moving objects will step. Fixing it needs a previous-tick transform from #106 (open question 3).
+- **Interpolation.** Render draws `GlobalTransform2d` as it stands after propagation and adds no interpolation of its own. Physics bodies are interpolated by physics itself (it writes the interpolated pose into `Transform2d` in `PostUpdate`, before propagation, per physics-2d.md), so they move smoothly on a 144 Hz display. Moving objects that physics does not drive step at the fixed rate when game code moves them in `FixedUpdate` (open question 3: app-platform.md defers a general mechanism).
 - **`Text.font`.** `None` means the `FontStore` default font (open question 7).
 
 **Open dependencies on other specs.** Render fixes its side of each interface here and leaves the other side to the named spec; none of them changes the Stage 1 API.
 
 | Id | Spec | What render needs or assumes |
 |---|---|---|
-| D1 | #106 (app) | `GlobalTransform2d` exposes a 2D affine and is propagated before the render extraction schedule runs; the schedule builder can order `render_frame` after `extract_*` and glue systems; the exact `App` and `Plugin` signatures. |
-| D2 | #106 (platform) | A primary-window resource that gives an `Into<wgpu::SurfaceTarget<'static>>` value, the physical size, the scale factor and resize events. The facade (not render) reads it, since runtime crates have no edges between them, and hands it to render's init. |
+| D1 | #106 (app), merged as app-platform.md | Resolved: `GlobalTransform2d(Affine2)`, propagated in `PostUpdate` set `PROPAGATE`, which runs before `Extract`; sets `EXTRACT` then `RENDER` in `Extract`; resources inserted in `Plugin::build`. Render uses exactly those names. |
+| D2 | #106 (platform), merged as app-platform.md | Resolved: `PrimaryWindow(PlatformWindow)` (`Send + Sync`, raw handle traits) and `WindowInfo { physical_size, scale_factor, focused }`. Render owns `RenderWindow` and exports `RENDER_WINDOW`; the facade glue G1a (app-platform's F1 window half) copies the platform values into it. |
 | D3 | #111 (assets) | Decoded RGBA8 and font bytes reach `TextureStore::insert` and `FontStore::insert_font` through facade glue (G1); the persisted image reference type (open question 1). |
-| D4 | #108 (physics), #109 (UI) | Their output reaches `DebugDraw` and `DrawList` through facade glue (G1); the UI provides a hook for a text-measure function (open question 4). |
+| D4 | #108 (physics), #109 (UI), both merged | Their output reaches `DebugDraw` and `DrawList` through facade glue (G1c, G1d). Render's guarantees to the UI are in "Handoffs from the other runtime specs". |
 | D5 | #110 (editor, MCP) | Exposes the reflected types and services in the next section through its generic tools and commands. Render files no issue there. |
 | D6 | follow-up (owner or coordinator) | Updates the stale WebGL2 text in INTERVIEW.md (line 31, line 136) and PLAN.md (line 220) to WebGPU only. Root-file hotspot outside this spec's footprint. |
+
+### Handoffs from the other runtime specs
+
+The merged specs fix how their data reaches render. Render does not change for any of them; this is what each side relies on.
+
+**UI (ui-mvp.md, "Render handoff" and its open question 1).** The UI facade glue (G1d) turns `UiDrawList` into `SpriteDraw` and `TextDraw` items in `Space::Screen`, with `layer = layer_base + 2 * item.layer` for graphics and `+ 1` for text, `depth` = the item's index, `clip: None`. Render guarantees, and I4, I9 and I10 test:
+
+1. **Equal-layer order.** Items of the same `layer` draw in ascending `depth`. Equal `layer` and `depth` break by texture (grouping), then sprites before text, then submission order. The UI's depths are distinct list indices, so the order is the list order.
+2. **One text batch per layer.** Consecutive text items in a pass's sorted order form one text batch, and a sprite sorts between them only if its `(layer, depth)` falls between theirs. UI text sits on its own odd layer (`layer_base + 2L + 1`), so a root layer needs one text batch, and 60 root layers stay under `MAX_TEXT_BATCHES = 64` (per pass). If that ever fails, ui-mvp.md's fallback (aligning with `anchor`, merging planes) applies.
+3. **Alignment width.** `TextStyle::max_width` with `wrap: None` is the alignment width: no wrapping, and `Center` and `Right` align inside it (the UI passes the node rectangle's width). The shaped-buffer cache key includes `max_width`. If `cosmic-text` does not align inside the width when it does not wrap, `text.rs` offsets each line by its measured width; I9 has a test for it.
+4. **Measure and draw share the cache.** The UI measures at the width offered during layout and draws at the final width, so the first draw after a change can shape a second time; a repeat is a hit. `Renderer::measure_text` and the draw use the same cache.
+5. **Scale.** `TextDraw.scale = ui_scale / dpi_scale` with `Space::Screen` text rasterized at `scale_factor * scale` = `ui_scale`, **not** quantized (only world text is, to 1/16). The UI divides physical coordinates by `dpi_scale` and render multiplies by `scale_factor` again in f32, so snapped edges return within 1e-3 px up to 8,192 px.
+6. **Shaping cost.** The UI's row for one changed 8-character label (<= 20 us) is covered by `text/shape_cold` (16 characters, <= 20 us). A digit fast path for rapidly changing numerals is not in v1; it is a render-side feature to add if the first measurement misses (ui-mvp.md open question 2).
+7. **Images.** `TextureStore::size(guid)` gives the UI an image's pixel size; an image whose texture is not loaded yet draws nothing.
+
+**Physics (physics-2d.md, "Debug draw").** Physics writes `PhysicsDebugDraw.lines` in world units each `Update` when enabled. The facade glue (G1c) emits each `DebugLine` as `DebugDraw::line(a, b, color, 1.0, Space::World)` in the `Extract` schedule, set `EXTRACT`, and sets physics' `DebugDrawOptions::bounds` from `CameraViews::main()` (`visible_rect()`), so only visible shapes are generated. Physics and render each have a type named `DebugDraw`; they are different types and the facade exposes them as `exitium::physics::DebugDraw` and `exitium::render::DebugDraw`. Physics interpolates its own bodies by writing `Transform2d` before propagation, so render needs no interpolation for them.
+
+**App and platform (app-platform.md).** Render uses the app's names: schedules `PreStartup`, `Startup`, `First`, `Extract`, sets `INPUT`, `EXTRACT`, `RENDER`, resources inserted in `Plugin::build`. The cursor is converted by facade glue (F1) with `InputState::cursor_logical` into `CameraView::screen_to_world`, which takes **logical** pixels (the same unit as `Space::Screen`); it uses `CameraViews::main()` from the previous frame's extraction. The window is `RenderWindow` (above). World axes agree (y up, counter-clockwise radians).
 
 ## MCP / editor surface
 
@@ -459,10 +509,12 @@ Everything the issues below need, in one place, so the intake PRs add the union 
 | `bytemuck` | `exitium_render`, normal, feature `derive` | **1.25.2** | MIT OR Apache-2.0 OR Zlib | Yes | `unsafe` is denied workspace-wide, so instance structs are cast to bytes with `Pod` derives instead of hand-written casts. wgpu already depends on it. |
 | `tracing` | `exitium_render`, normal | workspace version (0.1.44) | MIT | Yes | Warnings and errors from the renderer. Already a workspace dependency, default features off. |
 | `criterion` | `exitium_render`, dev | workspace version | MIT OR Apache-2.0 | n/a | Benchmarks, per `docs/benchmarks.md`. |
-| `wasm-bindgen` | `exitium` facade, dev, `wasm32` target (for the web sample, I18) | **0.2.130** (2026-10-30) | MIT OR Apache-2.0 | wasm only | The `#[wasm_bindgen(start)]` entry point of the Chrome sample. Packaging (the CLI, `index.html`) is the export spec's (#111). |
-| `web-sys` | `exitium` facade, dev, `wasm32` target, feature `console` | **0.3.107** | MIT OR Apache-2.0 | wasm only | Panic and log output to the browser console in the sample. Already in wgpu's web tree. |
+| `winit` | `exitium_render`, dev (the Stage 1 example, I12) | **0.30.13**, the workspace entry of app-platform.md (`default-features = false`, `["rwh_06", "x11"]`), referenced with `workspace = true` | Apache-2.0 (allowed by `deny.toml`) | yes (`spawn_app`, canvas) | The example needs a window and event loop of its own: ruling C1 forbids using `exitium_platform`. Same version `wgpu` 30 and `egui-wgpu` 0.37 need; 0.31 is beta. A dev-dependency does not make `exitium_render` depend on winit for games. |
+| `web-time` | `exitium_render`, dev (I12) | **1.1.0**, the workspace entry of app-platform.md | MIT OR Apache-2.0 | yes (re-exports `std::time` on native) | The example reports frame times; `std::time::Instant::now()` panics on `wasm32-unknown-unknown`. Already in winit's wasm tree. |
+| `wasm-bindgen` | `exitium_render`, dev, `wasm32` target (I12) | **0.2.130** (2026-10-30), the workspace entry of app-platform.md | MIT OR Apache-2.0 | wasm only | The web build of the example (the `wasm-bindgen` CLI recipe, which must equal the locked version). Already in winit's and wgpu's wasm trees. |
+| `web-sys` | `exitium_render`, dev, `wasm32` target (I12) | **0.3.107**, features `Window`, `Document`, `Element`, `HtmlCanvasElement`, `console`, the workspace entry of app-platform.md | MIT OR Apache-2.0 | wasm only | The example's console panic hook and canvas lookup. Already in winit's and wgpu's wasm trees, so the lock gains nothing. |
 
-Not added, on purpose: `pollster` (a 25-line std `block_on`), `raw-window-handle` and `winit` (platform #106: `winit` 0.30.13, `raw-window-handle` 0.6.2 comes through `wgpu`), `image` and `png` (assets #111 and #110), `lyon` (circles and polylines tessellate in about 80 lines), `egui-wgpu` (editor #110; 0.37.0 needs `wgpu ^30` and `winit ^0.30.13`, which matches).
+Not added, on purpose: `pollster` (a 25-line std `block_on`), `raw-window-handle` (0.6.2 comes through `wgpu`; `winit` re-exports the same version), `image` and `png` (assets #111 and #110), `lyon` (circles and polylines tessellate in about 80 lines), `egui-wgpu` (editor #110; 0.37.0 needs `wgpu ^30` and `winit ^0.30.13`, which matches).
 
 **Verified on 2026-11-18** in a scratch crate outside the repo: `cargo check` of `wgpu` (the exact feature list above plus the wasm-only entry) with `glyphon`, `bytemuck` (`derive`) and `wasm-bindgen-futures` passes for `wasm32-unknown-unknown` and for `x86_64-pc-windows-msvc`, with no extra rustflags. The same crate asserted `Send + Sync` for the wgpu and glyphon types listed in "Threading" on both targets.
 
@@ -473,12 +525,12 @@ Not added, on purpose: `pollster` (a 25-line std `block_on`), `raw-window-handle
 | Edge or entry | Added by | Reason |
 |---|---|---|
 | `exitium_render -> exitium_core` (normal) | intake-1 | Stage 1 uses `Handle`, `Slab`, `Rect`, `Color`, the math types. Today `crates/exitium_render/Cargo.toml` has no dependencies. |
-| `exitium_render`: the dependency rows above, `[[bench]]` entries `batch`, `text`, `extract` with `harness = false` | intake-1 | One manifest edit up front. |
-| `lib.rs` declaring every module in the layout (empty files with a `//!` doc, `plugin` included but empty) | intake-1 | No later issue edits `lib.rs`. |
-| `exitium_render -> exitium_ecs`, `exitium_app`, `exitium_reflect` (normal) | intake-2 | Stage 2 plugin: components, systems, `#[derive(Reflect)]`. No dev-dependencies are needed: the headless app tests use these normal edges. |
-| `exitium -> exitium_render` (normal) | intake-2 | The facade re-exports render (I17). |
-| `exitium -> exitium_assets`, `exitium_physics`, `exitium_ui` (normal) | intake-2 | Facade glue G1. Declared here so the union intake adds them once; G1 itself edits no manifest. |
-| `exitium` dev `wasm32`: `wasm-bindgen`, `web-sys` | intake-2 | The web sample, I18. |
+| `exitium_render`: the dependency rows above (dev-dependencies `criterion`, `winit`, `web-time`, and on `wasm32` `wasm-bindgen`, `web-sys`, all `workspace = true`), `[[bench]]` entries `batch`, `text`, `extract` with `harness = false` | intake-1 | One manifest edit up front. The workspace entries for `winit`, `web-time`, `wasm-bindgen` and `web-sys` are declared once, in the union with app-platform.md's list (same versions and features). |
+| Empty `benches/batch.rs`, `benches/text.rs`, `benches/extract.rs` (a `//!` doc and an empty `fn main() {}`) | intake-1 | Cargo fails on an explicit `[[bench]]` target with no file. I4, I9 and I15 fill them. |
+| `lib.rs` declaring every module in the layout (empty files with a `//!` doc, `plugin` included but empty) and `pub use wgpu;` | intake-1 | No later issue edits `lib.rs`. The re-export lets a game name `wgpu::PowerPreference` and `wgpu::TextureFormat` (in `RendererConfig`) through `exitium::render::wgpu` with no `wgpu` dependency of its own. |
+| `exitium_render -> exitium_ecs`, `exitium_app`, `exitium_reflect` (normal) | intake-2 | Stage 2 plugin: components, systems and sets, `#[derive(Reflect)]`. No further dev-dependencies: the headless app tests use these normal edges. |
+| `exitium -> exitium_render` (normal) | intake-2 | The facade re-exports render (I18) and runs the sample (I19). |
+| `exitium -> exitium_assets`, `exitium_physics`, `exitium_ui`, `exitium_platform` (normal) | intake-2 | Facade glue G1 (G1a needs the platform edge). Declared here so the union intake adds them once; G1 itself edits no manifest. |
 | CI: a GPU job on the Linux runner (lavapipe, `EXITIUM_REQUIRE_GPU=1`) and a Windows job on the software adapter | owner (a `.github/workflows/` change) | The headless GPU tests. |
 | `xtask` | unchanged | `exitium_render` builds for wasm32, so it is not `NATIVE_ONLY`. |
 
@@ -495,12 +547,12 @@ Not added, on purpose: `pollster` (a 25-line std `block_on`), `raw-window-handle
 - Edits: crates/exitium_render/
 - Governs: none
 - Hotspots: Cargo.toml, Cargo.lock, crates/exitium/
-- New crate edges: exitium_render -> exitium_ecs, exitium_render -> exitium_app, exitium_render -> exitium_reflect, exitium -> exitium_render, exitium -> exitium_assets, exitium -> exitium_physics, exitium -> exitium_ui
+- New crate edges: exitium_render -> exitium_ecs, exitium_render -> exitium_app, exitium_render -> exitium_reflect, exitium -> exitium_render, exitium -> exitium_assets, exitium -> exitium_physics, exitium -> exitium_ui, exitium -> exitium_platform
 ```
 
 ## Performance
 
-Budgets are for **release profile** (`lto = "thin"`), medians from criterion on the reference dev PC, GPU-free (the plan/execute split makes them CI-gatable, 5% regression rule). **Absolute figures are provisional ceilings**: the first bench PR (I4, I9, I14) re-baselines them with the `perf` agent. The binding product target is the min-spec line below.
+Budgets are for **release profile** (`lto = "thin"`), medians from criterion on the reference dev PC, GPU-free (the plan/execute split makes them CI-gatable, 5% regression rule). **Absolute figures are provisional ceilings**: the first bench PR (I4, I9, I15) re-baselines them with the `perf` agent. The binding product target is the min-spec line below.
 
 **Product target (min-spec: 4 cores, 8 GB, integrated GPU, 1080p).**
 
@@ -530,25 +582,25 @@ Steady-state **allocations in our code: zero** per frame after the first (`DrawL
 
 Complexity: `build` is O(n) filter + O(k log k) sort over the k visible items; text is O(glyphs) after a cache hit; textures O(1) lookup; capture O(pixels).
 
-GPU-side timings are not gated in CI (no GPU on runners). The sample app reports frame times for manual min-spec checks (I18). The wasm size contributed by `wgpu`+`glyphon` is measured once in the Stage 1 smoke build and reported, not gated.
+GPU-side timings are not gated in CI (no GPU on runners). The Stage 1 example (I12) reports frame times for manual min-spec checks. The wasm size contributed by `wgpu`+`glyphon` is measured once in the Stage 1 smoke build and reported, not gated.
 
 ## Test plan
 
 - **Pure CPU unit tests** (no adapter, run everywhere, including the wasm build check): sort-key order (negative, zero, large depths; layer bias; NaN depth counted), run splitting on texture and clip change, mask filtering, cull boxes under rotation and non-uniform scale, flip and sub-rect UVs, `Camera::resolve` for every `Scaling` (including zero-size and extreme zoom), `world_to_screen` / `screen_to_world` round trips (property test), pixel-perfect rounding and snapping, debug tessellation segment counts, capture row-padding removal and BGRA swap, readback of a 1 x 1 and a 255 x 3 image (odd row sizes).
-- **Headless GPU tests** (`tests/*.rs`): a helper requests the software adapter (WARP on Windows, lavapipe on Linux), builds the instance with `InstanceFlags::STRICT_WEBGPU_COMPLIANCE` (new in wgpu 30; it limits adapters and features to what WebGPU v1 allows, so native tests run under the browser's rules), and installs an uncaptured-error handler that **fails the test**. With no adapter a test **skips**, unless `EXITIUM_REQUIRE_GPU=1` (set on CI), where it fails. Cases: clear color; one sprite; tint; flip x and y; sub-rect from a sheet; layer and depth order with overlap and alpha; `texture: None` solid color; nearest vs linear sampling; mip generation (a 256 x 256 checker minified shows the average, not a sample); camera zoom, rotation, viewport; pixel-perfect on and off; screen space with `scale_factor` 1.5; clip rectangle; two cameras with `clear: None`; **a minimap camera with a smaller `viewport` and its own `clear` that leaves the rest of the target untouched and draws nothing outside its rectangle**; **a BGRA target (`headless_format: Bgra8UnormSrgb`) whose capture equals the RGBA golden**; **two passes of different target sizes in one `render` call, both drawing text and sprites, each matching its own golden (per-pass instance ranges, text renderers and viewports)**; text with an embedded test font (any OFL font under 100 KB; its license file sits beside it in `tests/fonts/`); text align, wrap and `measure_text`; debug line, circle, rect; resize and zero-size resize; render-to-texture plus capture; a third capture while two are pending returns `CaptureBusy`; stale-handle draw is skipped; texture too large; more than `MAX_INSTANCES`.
+- **Headless GPU tests** (`tests/*.rs`): the helper `tests/common/mod.rs` (I1) has its own blocking readback with the BGRA swap, so pixels can be checked before the production `capture.rs` (I8) exists, and I8 is tested against it. It requests the software adapter (WARP on Windows, lavapipe on Linux), builds the instance with `InstanceFlags::STRICT_WEBGPU_COMPLIANCE` (new in wgpu 30; it limits adapters and features to what WebGPU v1 allows, so native tests run under the browser's rules), and installs an uncaptured-error handler that **fails the test**. With no adapter a test **skips**, unless `EXITIUM_REQUIRE_GPU=1` (set on CI), where it fails. Cases: clear color; one sprite; tint; flip x and y; sub-rect from a sheet; layer and depth order with overlap and alpha; `texture: None` solid color; nearest vs linear sampling; mip generation (a 256 x 256 checker minified shows the average, not a sample); camera zoom, rotation, viewport; pixel-perfect on and off; screen space with `scale_factor` 1.5; clip rectangle; two cameras with `clear: None`; **a minimap camera with a smaller `viewport` and its own `clear` that leaves the rest of the target untouched and draws nothing outside its rectangle**; **a BGRA target (`headless_format: Bgra8UnormSrgb`) whose capture equals the RGBA golden**; **two passes of different target sizes in one `render` call, both drawing text and sprites, each matching its own golden (per-pass instance ranges, text renderers and viewports)**; text with an embedded test font (any OFL font under 100 KB; its license file sits beside it in `tests/fonts/`); text align, wrap and `measure_text`; debug line, circle, rect; resize and zero-size resize; render-to-texture plus capture; a third capture while two are pending returns `CaptureBusy`; stale-handle draw is skipped; texture too large; more than `MAX_INSTANCES`.
 - **Golden images**: `tests/golden/*.rgba8` (a `u32` width, `u32` height, then bytes; 64 x 64, about 16 KB each; written and read with std only, no PNG dependency; regenerate with `EXITIUM_UPDATE_GOLDENS=1`). Compare per channel with tolerance 2 (3 for text) and at most 0.5% pixels over it, because software rasterizers differ by about one level. The Linux lavapipe run is authoritative.
 - **Tint table:** for all 4096 table entries and a sweep of 100k values, the LUT result is within one level of `Color::to_srgba_u8`; white and "same as previous" fast paths return the same bytes.
 - **Compile-time:** `assert::<Renderer>()` for `Send + Sync` in `renderer.rs`, compiled by the native build and the CI wasm build.
 - **Stage 2** (headless app, no window): spawn entities with `Sprite`, `Camera2d`, `Text`, run one frame, assert the golden image; hierarchy (a child sprite follows its parent); hidden entities draw nothing; reflection round trip of the three components (text format) and the schema hash of each is pinned; `Screenshots` request and `take` work headless, with `camera: None` choosing the lowest-`order` active camera, falling back to an enabled `SceneView`, and returning `NoCamera` otherwise; `view` overrides center, rotation and zoom; sizes above 2048 are rejected; `RenderSettings` change applies next frame.
-- **wasm**: `cargo build --workspace --target wasm32-unknown-unknown` covers `exitium_render` (checked in CI by `cargo xtask ci wasm`). There is no automated browser test in the MVP. Each Stage 1 and Stage 2 render PR that changes the GPU path states in its description that the sample ran in Chrome (clear, sprites, text and a capture), until the export spec (#111) provides a browser harness.
+- **wasm**: `cargo build --workspace --target wasm32-unknown-unknown` covers `exitium_render` (checked in CI by `cargo xtask ci wasm`). There is no automated browser test in the MVP. **From I12 (the Stage 1 example) on**, every render PR that changes the GPU path states in its description that the example ran in Chrome (clear, sprites, text, two cameras and a capture, no uncaptured wgpu error); I1 to I11 rely on the headless tests, and I12 is the first issue that runs the surface, resize and present path on a real window and in a browser. This applies until the export spec (#111) provides a browser harness.
 - **Benchmarks** under the 5% gate (table above).
 
 ## Open questions
 
 1. **Sprite image reference.** `Sprite.image` is a `Guid` today because `Handle<T>` is not reflectable and `AssetRef<T>` is decided in the assets spec (#111, reflect-model open question 13). If #111 chooses `AssetRef<Image>`, the field type changes inside the plugin only.
-2. **Who owns the glue.** Settled by cross-spec ruling (a): the `exitium` facade holds the systems that feed render from assets, physics debug and the UI (issue G1). Left open only for #109: the exact hook through which the facade gives the UI a text-measure function.
-3. **Interpolation between fixed ticks.** Needs a previous-tick `GlobalTransform2d` (or an interpolated copy) from #106. Without it, moving objects step at 60 Hz on faster displays.
-4. **Text measurement and rich text for the UI (#109).** Taffy layout needs a measure function, and there is no `ui -> render` edge. The facade glue passes `Renderer::measure_text` to the UI as a closure; the UI spec must accept such a hook. Rich text (several colors in one block) is not in v1; the UI can lay out several `TextDraw`s, or `TextDraw` gains `spans` additively.
+2. **Who owns the glue.** Settled by cross-spec ruling (a) and app-platform.md: the `exitium` facade holds the systems that feed render from the platform window, assets, physics debug and the UI (issue G1, slices G1a to G1d). Nothing is left open here: the UI hook is `UiMeasure` (ui-mvp.md).
+3. **Interpolation of non-physics movers.** Physics interpolates its own bodies. Anything else that game code moves in `FixedUpdate` steps at 60 Hz on faster displays; app-platform.md defers a general previous-tick transform (its open question 6). Additive later.
+4. **Text measurement and rich text for the UI (#109).** Taffy layout needs a measure function, and there is no `ui -> render` edge. Resolved by ui-mvp.md: the UI takes a `UiMeasure` trait object, and the facade glue (G1d) implements it over `Renderer::measure_text` and `TextureStore::size`. Rich text (several colors in one block) is not in v1; the UI can lay out several `TextDraw`s, or `TextDraw` gains `spans` additively.
 5. **Premultiplied alpha.** v1 blends straight alpha and relies on importer-side edge bleeding, so a mip of a portrait with a transparent border can show a dark fringe. A premultiplied pipeline needs an importer step; decide with #111 after the first portrait test.
 6. **Y-sort and isometric depth policy.** `depth` is a caller-supplied `f32`, so nothing is blocked. A `y_sort` flag on `Sprite` (depth from the world y) and height levels belong to the later isometric work.
 7. **Default font.** No font ships in `exitium_render`. The editor and debug overlays need one. A small OFL font embedded in the `exitium` facade (license file in the repo, ADR-0003) is the proposal; decide with #110.
@@ -560,7 +612,7 @@ GPU-side timings are not gated in CI (no GPU on runners). The sample app reports
 
 ## Implementation issues
 
-The architect files these with the `file-issue` skill in the Jam MVP milestone after this spec merges, each with the literal `## Footprint` block shown. Every issue carries acceptance criteria and the `area:render` label, edits exactly one crate (the facade issues edit none and only hold the `crates/exitium/` hotspot) and is sized to about 600 changed lines or fewer. **One crate has at most one issue in flight** (factory rule), so the render issues run strictly in the order below. The order puts what Glutton and the MVP need first (draw sprites, then text, and see the result through capture) and the optional pieces last. `Blocked by` names slices here and is rewritten to `#N` when filed; blockers in other specs are written "after #106 stage 2" until their issue numbers exist. **Every Stage 1 slice (I1 to I12) is blocked by intake-1; every Stage 2 slice (I13 to I16) by intake-2**; the intake PRs are defined under "Dependencies and wiring".
+The architect files these with the `file-issue` skill in the Jam MVP milestone after this spec merges, each with the literal `## Footprint` block shown. Every issue carries acceptance criteria and the `area:render` label, edits exactly one crate (the facade issues edit none and only hold the `crates/exitium/` hotspot) and is sized to about 600 changed lines or fewer. **One crate has at most one issue in flight** (factory rule), so the render issues run strictly in the order below. The order puts what Glutton and the MVP need first (draw sprites, then text, and see the result through capture and a real window) and the optional pieces last. `Blocked by` names slices here and is rewritten to `#N` when filed; blockers in other specs use their placeholder names (`PP2`, `U11`, `F1`) until their issue numbers exist. **Every Stage 1 slice (I1 to I13) is blocked by intake-1; every Stage 2 slice (I14 to I19 and G1) by intake-2**; the intake PRs are defined under "Dependencies and wiring".
 
 **I1. `feat(render): device, surface, resize and present modes`** (about 500 lines)
 ```
@@ -570,8 +622,8 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - Hotspots: none
 - New crate edges: none
 ```
-- Scope: `error.rs`, `config.rs`, `gpu.rs`, the `stats.rs` skeleton, the std `block_on`, `crates/exitium_render/CLAUDE.md`, the GPU test helper.
-- Acceptance: `Renderer::headless_blocking` works on the software adapter. Target-format choice (`F`) is a pure function with unit tests for sRGB, non-sRGB plus `view_formats`, BGRA, and empty capabilities. The `CurrentSurfaceTexture` mapping is a pure function tested for every variant. `resize` coalescing and zero-size handling are unit tested. `WebGpuUnavailable` and `NoAdapter` are returned in the matching cases. The helper (software adapter, `STRICT_WEBGPU_COMPLIANCE`, fail on uncaptured error, `EXITIUM_REQUIRE_GPU`) exists. `crates/exitium_render/CLAUDE.md` is written. The wasm build passes.
+- Scope: `error.rs`, `config.rs`, `gpu.rs`, the `stats.rs` skeleton, the std `block_on`, `crates/exitium_render/CLAUDE.md`, and the GPU test helper `tests/common/mod.rs`.
+- Acceptance: `Renderer::headless_blocking` works on the software adapter. Target-format choice (`F`) is a pure function with unit tests for sRGB, non-sRGB plus `view_formats`, BGRA, and empty capabilities. The `CurrentSurfaceTexture` mapping is a pure function tested for every variant. `resize` coalescing and zero-size handling (including a zero size at creation) are unit tested. `WebGpuUnavailable` and `NoAdapter` are returned in the matching cases. The helper provides the software adapter, `STRICT_WEBGPU_COMPLIANCE`, a fail-on-uncaptured-error handler, `EXITIUM_REQUIRE_GPU`, and **its own blocking readback of any render texture with the BGRA swap** (std-only, test code), so I2 to I7 can verify pixels before the production `capture.rs` of I8 exists. `crates/exitium_render/CLAUDE.md` is written. The wasm build passes.
 - Blocked by: intake-1.
 
 **I2. `feat(render): textures, samplers, mip generation and render textures`** (about 550 lines)
@@ -583,7 +635,7 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - New crate edges: none
 ```
 - Scope: `texture.rs`, `mipmap.wgsl`.
-- Acceptance: create, destroy, stale-handle and size-limit behavior is tested. Sampled textures are `Rgba8UnormSrgb`; render textures use the target format `F` (also with a BGRA `F`); the mip pipeline is built for `Rgba8UnormSrgb`. Mips of a checker texture are verified by readback. `white_texture`, `create_render_texture` and `texture_bytes` accounting work.
+- Acceptance: create, destroy, stale-handle and size-limit behavior is tested. Sampled textures are `Rgba8UnormSrgb`; render textures use the target format `F` (also with a BGRA `F`); the mip pipeline is built for `Rgba8UnormSrgb`. Mips of a checker texture are verified with the I1 helper's readback. `white_texture`, `create_render_texture` and `texture_bytes` accounting work.
 - Blocked by: intake-1, I1.
 
 **I3. `feat(render): camera math with scaling modes and pixel-perfect snap`** (about 400 lines)
@@ -595,7 +647,7 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - New crate edges: none
 ```
 - Scope: `camera.rs`.
-- Acceptance: `Camera`, `Scaling`, `CameraView`, `resolve`, `world_to_screen`, `screen_to_world` and `visible_rect` for every scaling mode. Pixel-perfect rounding and center snap. A property test for round trips. The `camera/resolve` benchmark within its ceiling.
+- Acceptance: `Camera`, `Scaling`, `CameraView`, `resolve`, `world_to_screen`, `screen_to_world` (logical pixels in and out, documented as such) and `visible_rect` for every scaling mode. Pixel-perfect rounding and center snap. A property test for round trips at scale factors 1.0 and 1.5. The `camera/resolve` benchmark within its ceiling.
 - Blocked by: intake-1.
 
 **I4. `feat(render): sprite sort, cull, tint table and instance batching (CPU)`** (about 600 lines)
@@ -606,8 +658,8 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - Hotspots: none
 - New crate edges: none
 ```
-- Scope: `batch.rs`, `benches/batch.rs`.
-- Acceptance: `SpriteDraw`, `DrawList` (sprites only at this point), key packing, `BatchPlan::build` with the camera composed in step 1, runs split on texture, clip and kind. The 4096-entry tint table and its fast paths, with the accuracy test (within one level of `Color::to_srgba_u8`). The CPU unit tests from the test plan. A test that capacities stay constant over 100 identical frames. Every `batch/*` benchmark (varied tints included) within its ceiling.
+- Scope: `batch.rs`, `benches/batch.rs` (the file intake-1 created empty).
+- Acceptance: `SpriteDraw`, `DrawList` (sprites only at this point), key packing, `BatchPlan::build` with the camera composed in step 1, runs split on texture, clip and kind. The ordering guarantees 1 and 2 of "Handoffs from the other runtime specs" (equal-layer depth order, tie-breaks) have unit tests. The 4096-entry tint table and its fast paths, with the accuracy test (within one level of `Color::to_srgba_u8`). The CPU unit tests from the test plan. A test that capacities stay constant over 100 identical frames. Every `batch/*` benchmark (varied tints included) within its ceiling.
 - Blocked by: intake-1, I2, I3.
 
 **I5. `feat(render): sprite pipeline and single-pass Renderer::render`** (about 550 lines)
@@ -618,8 +670,8 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - Hotspots: none
 - New crate edges: none
 ```
-- Scope: `sprite.wgsl`, `renderer.rs`, the golden-image test helper (std-only read and write of `.rgba8`).
-- Acceptance: one pass on the surface or on a render texture; explicit `set_viewport` to the whole target and `set_scissor_rect` to the camera rectangle and per-run `clip`; the first pass clears the whole target; instance and uniform upload with `MAX_INSTANCES` drop counted; `FrameStatus` values. Golden tests for clear, one sprite and tint.
+- Scope: `sprite.wgsl`, `renderer.rs`, the golden-image helpers (std-only read and write of `.rgba8`, comparison with tolerance).
+- Acceptance: one pass on the surface or on a render texture; explicit `set_viewport` to the whole target and `set_scissor_rect` to the camera rectangle and per-run `clip`; the first pass clears the whole target; instance and uniform upload with `MAX_INSTANCES` drop counted; `FrameStatus` values. Golden tests for clear, one sprite and tint, read back with the I1 helper.
 - Blocked by: intake-1, I1, I2, I4.
 
 **I6. `feat(render): several camera passes, per-pass instance ranges and viewports`** (about 450 lines)
@@ -631,7 +683,7 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - New crate edges: none
 ```
 - Scope: `renderer.rs` (pass loop, per-pass ranges of the one instance buffer, uniform slots), the clear-quad for later passes.
-- Acceptance: passes sorted by `order`; each pass has its own contiguous range of the shared instance buffer; `clear: Some` on a later pass fills only its viewport; a minimap camera with a smaller `viewport` draws and clears nothing outside its rectangle (golden); two passes with different target sizes in one `render` call each match their golden; a BGRA target gives the same capture as an RGBA one.
+- Acceptance: passes sorted by `order`; each pass has its own contiguous range of the shared instance buffer; `clear: Some` on a later pass fills only its viewport; a minimap camera with a smaller `viewport` draws and clears nothing outside its rectangle (golden); two passes with different target sizes in one `render` call each match their golden; a BGRA target gives the same pixels as an RGBA one when read back with the I1 helper (the helper does the swap).
 - Blocked by: intake-1, I5.
 
 **I7. `test(render): sprite golden suite`** (about 500 lines, mostly goldens)
@@ -655,7 +707,7 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - New crate edges: none
 ```
 - Scope: `capture.rs`.
-- Acceptance: `request_capture` and `poll_captures`; `MAX_PENDING_CAPTURES = 2` with `CaptureBusy`; row-padding removal; BGRA fix-up; error mapping; tests for odd sizes; non-blocking on native; builds for wasm.
+- Acceptance: `request_capture` and `poll_captures`; `MAX_PENDING_CAPTURES = 2` with `CaptureBusy`; row-padding removal; BGRA fix-up; error mapping; tests for odd sizes and a test that the production readback equals the I1 helper's readback on the I5 to I7 scenes; non-blocking on native; builds for wasm.
 - Blocked by: intake-1, I6.
 
 **I9. `feat(render): fonts, text layout, shaped-buffer cache and measuring (no drawing)`** (about 500 lines)
@@ -667,7 +719,7 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - New crate edges: none
 ```
 - Scope: `text.rs` (layout half), `benches/text.rs` (`text/shape_cold`), `DrawList::text` with the string arena in `batch.rs`.
-- Acceptance: `load_font` with the empty-database `FontSystem`; `TextStyle`, `TextDraw`; the cache with its 120-frame sweep; `measure_text`; `text_no_font`; tests with the embedded OFL test font for align, wrap and measure results (sizes, not pixels); `text/shape_cold` within its ceiling.
+- Acceptance: `load_font` with the empty-database `FontSystem`; `TextStyle`, `TextDraw`; the cache with its 120-frame sweep and a key that includes `max_width`; `measure_text`; `text_no_font`; tests with the embedded OFL test font for align, wrap and measure results (sizes, not pixels), including **alignment inside `max_width` with `wrap: None`** (handoff guarantee 3); `text/shape_cold` within its ceiling.
 - Blocked by: intake-1, I4.
 
 **I10. `feat(render): draw text in passes with per-pass renderers and viewports`** (about 550 lines)
@@ -679,7 +731,7 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - New crate edges: none
 ```
 - Scope: `text.rs` (drawing half), `renderer.rs` (text runs), the `Send + Sync` assertion.
-- Acceptance: one `TextAtlas`; a `TextRenderer` pool per (pass, batch) and one `Viewport` per pass; `MAX_TEXT_BATCHES = 64` per pass with `text_batches_merged`; clip and viewport intersected into `TextBounds`; world scale quantized to 1/16; **a test with two passes of different sizes, both drawing text, in one `render` call**; goldens for align, wrap and color; `assert::<Renderer>()` for `Send + Sync` compiles on native and in the wasm build; the `text/prepare_cached` benchmarks (one and two passes) within their ceilings.
+- Acceptance: one `TextAtlas`; a `TextRenderer` pool per (pass, batch) and one `Viewport` per pass; `MAX_TEXT_BATCHES = 64` per pass with `text_batches_merged`; clip and viewport intersected into `TextBounds`; world scale quantized to 1/16, screen scale not; **a test with two passes of different sizes, both drawing text, in one `render` call**; a test that a root-layer-like run of 200 text items on one layer produces one text batch (handoff guarantee 2); goldens for align, wrap and color; `assert::<Renderer>()` for `Send + Sync` compiles on native and in the wasm build; the `text/prepare_cached` benchmarks (one and two passes) within their ceilings.
 - Blocked by: intake-1, I6, I9.
 
 **I11. `feat(render): debug lines, circles, rects and polylines`** (about 450 lines)
@@ -691,10 +743,22 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - New crate edges: none
 ```
 - Scope: `debug.rs`, `line.wgsl`.
-- Acceptance: the `DebugDraw` API; constant pixel width; the segment-count rule; per-pass instance ranges; drawn last; world and screen space; goldens; the `debug/tessellate_circle` benchmark within its ceiling.
+- Acceptance: the `DebugDraw` API; constant pixel width; the segment-count rule; per-pass instance ranges; `MAX_DEBUG_LINES` drop counted; drawn last; world and screen space; goldens; the `debug/tessellate_circle` benchmark within its ceiling.
 - Blocked by: intake-1, I6.
 
-**I12. `feat(render): diagnostics: device-lost, uncaptured errors and RenderStats`** (about 300 lines)
+**I12. `feat(render): windowed and web example (Stage 1, no ECS)`** (about 550 lines)
+```
+## Footprint
+- Edits: crates/exitium_render/
+- Governs: none
+- Hotspots: none
+- New crate edges: none
+```
+- Scope: `examples/render_window.rs` and `examples/web/index.html`. The example opens **its own window** with the intake-1 dev-dependencies (`winit` 0.30.13, `web-time` 1.1.0, and on wasm32 `wasm-bindgen` 0.2.130 and `web-sys` 0.3.107); it does not use `exitium_platform` (ruling C1). It creates the `Renderer` from an `Arc<winit::window::Window>` (native: `new_blocking`; web: `spawn_local` into a shared slot), forwards resize and scale-factor changes, and draws from a procedurally generated sprite sheet (no image decoder), the embedded OFL test font, two cameras (a main camera and a minimap with its own `viewport` and `clear`), a key that toggles 20,000 sprites, a key that requests a capture and logs its checksum, and a once-per-second frame-time line from `web-time`.
+- Acceptance: runs on Windows and in Chrome (the PR states both, with no uncaptured wgpu error and a non-blank canvas); `cargo build --example render_window --target wasm32-unknown-unknown` passes and the PR gives the `wasm-bindgen` CLI recipe at the locked version; frame times at 20,000 sprites on the dev PC are reported. **From this issue on, every render PR that changes the GPU path repeats the Chrome check** (see the test plan).
+- Blocked by: intake-1, I11.
+
+**I13. `feat(render): diagnostics: device-lost, uncaptured errors and RenderStats`** (about 300 lines)
 ```
 ## Footprint
 - Edits: crates/exitium_render/
@@ -704,9 +768,9 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 ```
 - Scope: `stats.rs`, `gpu.rs`.
 - Acceptance: every `RenderStats` field named in the MCP table is filled by its code path; device-lost surfaces as `RenderError::DeviceLost`; uncaptured errors are counted and logged; a test forces one.
-- Blocked by: intake-1, I10, I11.
+- Blocked by: intake-1, I12.
 
-**I13. `feat(render): plugin components, RenderPlugin, settings and scene view`** (about 500 lines)
+**I14. `feat(render): plugin components, RenderPlugin, window resource, settings and scene view`** (about 600 lines)
 ```
 ## Footprint
 - Edits: crates/exitium_render/
@@ -714,11 +778,11 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - Hotspots: none
 - New crate edges: none
 ```
-- Scope: `plugin/mod.rs` (`RenderPlugin` and registration), `components.rs`, `settings.rs` (`RenderSettings`, `RenderStats` reflection, `SceneView`), and `#[derive(Reflect)]` on `Scaling`, `TextAlign` and `TextWrap` in `camera.rs` and `text.rs`.
-- Acceptance: `Sprite`, `Camera2d`, `Text` derive `Component` and `Reflect` with the attributes in the inspector list; `RenderSettings`, `RenderStats` and `SceneView` are reflected resources; `RenderPlugin` (config, headless flag, default) builds against the #106 `Plugin` trait and registers the types; reflection round trip and pinned schema hashes; no GPU needed.
-- Blocked by: intake-2, I12, after #106 stage 2 (App, Plugin, schedules).
+- Scope: `plugin/mod.rs` (`RenderPlugin` and registration), `plugin/components.rs`, `plugin/settings.rs` (`RenderSettings`, `SceneView`), **`plugin/window.rs` (`RenderWindow`, the `RENDER_WINDOW` set)**, **`stats.rs` (`#[derive(Reflect)]` on `RenderStats`, so the file is named here)**, and `#[derive(Reflect)]` on `Scaling`, `TextAlign` and `TextWrap` in `camera.rs` and `text.rs`.
+- Acceptance: `Sprite`, `Camera2d`, `Text` derive `Component` and `Reflect` with the attributes in the inspector list; `RenderSettings`, `RenderStats` and `SceneView` are reflected resources; `RenderWindow` has `set_target`, `set_size`, `size`, `scale_factor`, `has_target` and a unit test with a stub window target; `assert::<RenderWindow>()` for `Send + Sync` compiles on native and in the wasm build; `RenderPlugin` (config, headless flag, default) builds against the app-platform.md `Plugin` trait and inserts every resource in `build`; reflection round trip and pinned schema hashes; no GPU needed. If the PR passes about 600 lines, `RenderWindow` and its set move to their own issue before this one.
+- Blocked by: intake-2, I13, the app spine issues of app-platform.md (A1 to A4: `Plugin`, `App`, sets, `GlobalTransform2d`).
 
-**I14. `feat(render): plugin extraction and render_frame systems`** (about 550 lines)
+**I15. `feat(render): plugin extraction and render_frame systems`** (about 550 lines)
 ```
 ## Footprint
 - Edits: crates/exitium_render/
@@ -727,10 +791,10 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - New crate edges: none
 ```
 - Scope: `plugin/extract.rs`, `benches/extract.rs`, additions to `RenderPlugin::build`.
-- Acceptance: `extract_cameras` (cameras and the enabled scene view), `extract_draws` and `render_frame` registered in the render extraction schedule with the ordering in "Stage 2"; `Guid` resolved through the stores (empty stores until I15); a headless app golden test (sprite, text, camera, hierarchy, hidden entity); the `extract/sprites` benchmark within its ceiling.
-- Blocked by: intake-2, I13, `GlobalTransform2d` from #106.
+- Acceptance: `extract_cameras` (cameras and the enabled scene view, and the `CameraViews` resource that survives `render_frame`) and `extract_draws` in set `EXTRACT`, `render_frame` in set `RENDER`, of the `Extract` schedule; `Guid` resolved through the stores (empty until I16); a headless app golden test (sprite, text, camera, hierarchy, hidden entity); the `extract/sprites` benchmark within its ceiling.
+- Blocked by: intake-2, I14.
 
-**I15. `feat(render): plugin stores, renderer init and resize`** (about 450 lines)
+**I16. `feat(render): plugin renderer init, resize and stores`** (about 450 lines)
 ```
 ## Footprint
 - Edits: crates/exitium_render/
@@ -738,11 +802,11 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - Hotspots: none
 - New crate edges: none
 ```
-- Scope: `plugin/stores.rs`, the init and resize systems.
-- Acceptance: `TextureStore` and `FontStore`; `init_renderer` (native blocking, web `spawn_local` into a shared slot, headless); `poll_renderer_init`; `apply_resize`; `apply_render_settings`; the `assert::<Renderer>()` still compiles in the wasm build.
-- Blocked by: intake-2, I14.
+- Scope: `plugin/stores.rs` (`TextureStore` with `size`, `FontStore`), the init and resize systems.
+- Acceptance: `init_renderer` in `Startup` reads **only `RenderWindow`** (native blocking, web `spawn_local` into a shared slot, headless, and a late target); `poll_renderer_init`, `apply_resize` (reads only `RenderWindow`) and `apply_render_settings` in `First` set `RENDER_WINDOW`, ordered after `INPUT`; a headless-app test where a test system plays the glue (writes a stub `RenderWindow` before `RENDER_WINDOW`) and a resize reaches `Renderer::resize` in the same frame; the `assert::<Renderer>()` still compiles in the wasm build.
+- Blocked by: intake-2, I15.
 
-**I16. `feat(render): plugin screenshot service`** (about 400 lines)
+**I17. `feat(render): plugin screenshot service`** (about 400 lines)
 ```
 ## Footprint
 - Edits: crates/exitium_render/
@@ -752,21 +816,9 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 ```
 - Scope: `plugin/screenshot.rs`.
 - Acceptance: `Screenshots::request` and `take` with the default-camera rule, `view` override, `NoCamera`, the 2048 size cap and `CaptureBusy`; pooled render textures; a headless test of the whole path.
-- Blocked by: intake-2, I15.
-
-**I17. `feat(exitium): re-export the render API through the facade`**
-```
-## Footprint
-- Edits: none
-- Governs: none
-- Hotspots: crates/exitium/
-- New crate edges: none
-```
-- Scope: `crates/exitium/src/` only; the edge `exitium -> exitium_render` is added by intake-2, so no manifest changes. **This is the only issue that adds render re-exports**, and it adds the complete list: Stage 1 `Renderer`, `RendererConfig`, `PresentMode`, `RenderError`, `FrameStatus`, `SkipReason`, `Texture`, `ImageData`, `TextureDesc`, `Filter`, `Address`, `Mips`, `SpriteDraw`, `Flip`, `Space`, `DrawList`, `Camera`, `CameraView`, `CameraPass`, `RenderTarget`, `Scaling`, `FontId`, `TextStyle`, `TextDraw`, `TextAlign`, `TextWrap`, `DebugDraw`, `Capture`, `CaptureId`; Stage 2 `RenderPlugin`, `Sprite`, `Camera2d`, `Text`, `SceneView`, `SceneViewTarget`, `RenderSettings`, `RenderStats`, `TextureStore`, `FontStore`, `Screenshots`, `ScreenshotRequest`, `ScreenshotId`, `ViewOverride`. A later change to render's public API gets its re-export in a facade follow-up.
-- Acceptance: every name above is reachable as `exitium::<Name>` (a compile test lists them); `cargo doc` has no broken re-export; high-risk review (facade API).
 - Blocked by: intake-2, I16.
 
-**I18. `feat(exitium): windowed and web render sample`**
+**I18. `feat(exitium): re-export the render API through the facade`** (about 150 lines)
 ```
 ## Footprint
 - Edits: none
@@ -774,11 +826,11 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - Hotspots: crates/exitium/
 - New crate edges: none
 ```
-- Scope: `crates/exitium/examples/` (the web entry uses the intake-2 `wasm-bindgen` and `web-sys` dev-dependencies).
-- Acceptance: draws sprites, text, two cameras and a capture on Windows and in Chrome; reports frame times at 20,000 sprites for the min-spec check; the PR states that it ran in Chrome with no uncaptured wgpu error.
-- Blocked by: I17 (same hotspot, and it uses the re-exports), the platform window issue from #106.
+- Scope: `crates/exitium/src/` only; the edge `exitium -> exitium_render` is added by intake-2, so no manifest changes. **This is the only issue that adds render re-exports**, and it adds the complete list under a module, `exitium::render`, so the render `DebugDraw` and `Texture` names cannot collide with physics or assets: `wgpu` (the crate, re-exported by render), Stage 1 `Renderer`, `RendererConfig`, `PresentMode`, `RenderError`, `FrameStatus`, `SkipReason`, `Texture`, `ImageData`, `TextureDesc`, `Filter`, `Address`, `Mips`, `SpriteDraw`, `Flip`, `Space`, `DrawList`, `Camera`, `CameraView`, `CameraPass`, `RenderTarget`, `Scaling`, `FontId`, `TextStyle`, `TextDraw`, `TextAlign`, `TextWrap`, `DebugDraw`, `Capture`, `CaptureId`; Stage 2 `RenderPlugin`, `Sprite`, `Camera2d`, `Text`, `SceneView`, `SceneViewTarget`, `RenderWindow`, `CameraViews`, `RenderSettings`, `RenderStats`, `TextureStore`, `FontStore`, `Screenshots`, `ScreenshotRequest`, `ScreenshotId`, `ViewOverride`, and the set `RENDER_WINDOW` (as `exitium::render::sets::RENDER_WINDOW`). It also adds `RenderPlugin` to the `DefaultPlugins` group after `PlatformPlugin`, unless app-platform.md's F3 already did. A later change to render's public API gets its re-export in a facade follow-up.
+- Acceptance: every name above is reachable as `exitium::render::<Name>` (a compile test lists them, and builds a `RenderPlugin { config: RendererConfig { power: exitium::render::wgpu::PowerPreference::LowPower, .. }, .. }` without a direct `wgpu` dependency); `cargo doc` has no broken re-export; high-risk review (facade API).
+- Blocked by: intake-2, I17.
 
-**G1. `feat(exitium): facade glue that feeds the renderer`** (filed after #108, #109 and #111 merge; size not fixed here)
+**I19. `feat(exitium): windowed sample through the plugins`** (about 250 lines)
 ```
 ## Footprint
 - Edits: none
@@ -786,8 +838,23 @@ The architect files these with the `file-issue` skill in the Jam MVP milestone a
 - Hotspots: crates/exitium/
 - New crate edges: none
 ```
-- Scope: the facade systems that load decoded images and fonts from `exitium_assets` into `TextureStore` and `FontStore`, draw the physics debug shapes into `DebugDraw` from `exitium_physics`, convert the UI draw data of `exitium_ui` into `DrawList` entries and give the UI a text-measure closure. The edges `exitium -> exitium_assets`, `exitium_physics`, `exitium_ui` come from intake-2. Split into one issue per source (assets, physics debug, UI) if any would exceed about 600 lines; each split issue keeps this footprint and runs after the previous one (shared hotspot).
-- Acceptance: one headless test per source that renders a golden through the glue.
-- Blocked by: I17, the Stage 2 issues of #108, #109 and #111.
+- Scope: `crates/exitium/examples/` (a sample that uses `DefaultPlugins`: `PlatformPlugin`, `RenderPlugin`, the G1a window glue); it adds no manifest entry (the sample's web entry is the platform's, per app-platform.md).
+- Acceptance: draws sprites, text, two cameras and a screenshot request through the ECS plugins on Windows and in Chrome, with the window glue from G1a; resizing the window reaches the renderer within one frame.
+- Blocked by: intake-2, I18, G1a, the platform plugin issue PP2 of app-platform.md.
+
+**G1. `feat(exitium): facade glue that feeds the renderer`** (four slices, each about 150 to 450 lines; filed after #108, #109 and #111 merge)
+
+All slices have the footprint below (`New crate edges: none`: `exitium -> exitium_render`, `exitium_assets`, `exitium_physics`, `exitium_ui` and `exitium_platform` come from intake-2), run one at a time (shared hotspot), and are `Blocked by: intake-2, I18` plus what each lists. Where another spec already has an issue for the same systems (app-platform.md F1, physics-2d.md G1, ui-mvp.md F1), the architect files it once and cross-links it.
+```
+## Footprint
+- Edits: none
+- Governs: none
+- Hotspots: crates/exitium/
+- New crate edges: none
+```
+- **G1a, window glue** (about 150 lines; the window half of app-platform.md F1). `PreStartup`: `RenderWindow::set_target(primary_window.0.clone())` from `Option<Res<PrimaryWindow>>`. `First`, `after_set(INPUT)` and `before_set(RENDER_WINDOW)`: `RenderWindow::set_size(info.physical_size, info.scale_factor)` from `Option<Res<WindowInfo>>`. Acceptance: a window opens and the renderer takes the surface; a resize reaches the renderer in the same frame; a headless app (no `PrimaryWindow`, no renderer) runs a frame without panicking. Blocked by: intake-2, I16, the platform plugin issue PP2.
+- **G1b, assets** (about 300 lines). Decoded images and fonts from `exitium_assets` into `TextureStore` and `FontStore`. Acceptance: a headless golden through the glue. Blocked by: intake-2, I16, I18, the assets Stage 2 issue of #111.
+- **G1c, physics debug** (about 150 lines; physics-2d.md G1). `PhysicsDebugDraw.lines` into `DebugDraw::line(.., Space::World)` in set `EXTRACT`, and `DebugDrawOptions::bounds` from `CameraViews::main()`. Acceptance: a headless golden of collider outlines. Blocked by: intake-2, I15, I18, the physics plugin issue (`PhysicsDebugDraw`).
+- **G1d, UI** (about 450 lines; ui-mvp.md F1). `UiMeasure` over `Renderer::measure_text` and `TextureStore::size`, then `UiDrawList` into `SpriteDraw` and `TextDraw` per the ui-mvp.md handoff (layers, depth, `dpi_scale` division, `ui_scale / dpi_scale` text scale). Acceptance: the round-trip test for `dpi_scale` in {1, 1.25, 1.5, 2} and a headless golden of a panel with text. Blocked by: intake-2, I15, I16, I18, the UI issues U8 and U11.
 
 The reflected types and services listed under "MCP / editor surface" are exposed by the #110 issues; this spec files nothing in `exitium_mcp` or `exitium_editor`.

@@ -12,3 +12,4 @@ You are the Exitium docs and graph maintainer.
 - Keep MCP tool descriptions accurate. Agents rely on them.
 - Rebuild the local graph with `graphify update .`. `graphify-out/` is gitignored; never commit it (ADR-0004).
 - Skip public-facing docs polish for now (owner-only project). Spend the effort on accuracy that agents need.
+- Edit only the footprint the orchestrator gives you; other issues run in parallel on everything else. If you need a path outside it, stop and return `blocked: footprint <paths>`.

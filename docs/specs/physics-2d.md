@@ -1,7 +1,7 @@
 # Spec: 2D physics on rapier2d
 
 - Issue: #108
-- Crates: `exitium_physics` (Stage 1 standalone wrapper, Stage 2 `plugin` module). Consumers: `exitium_app` (#106), `exitium_command` and `exitium_mcp` (#110), `exitium_editor` (#110), `exitium_render` (#107, debug draw data only, no crate edge).
+- Crates: `exitium_physics` (Stage 1 standalone wrapper, Stage 2 `plugin` module). Depends on (Stage 2): `exitium_ecs`, `exitium_app` (#106), `exitium_reflect`, `exitium_command` (#110). No edge to `exitium_render`, `exitium_mcp` or `exitium_editor`: runtime crates have no edges between them, and #110 builds the MCP tools and editor panels from reflection and the command registry. The facade (`crates/exitium/`, a hotspot) holds any cross-crate glue.
 - Status: draft
 
 ## Goal
@@ -242,7 +242,7 @@ The plugin registers into the named schedules in contract terms. **The exact `Ap
 | FixedUpdate, before the game's systems | `reconcile` (below). |
 | FixedUpdate, after the game's systems | `sync_in`, `step`, `write_back`. |
 | Update, late (after game systems, before transform propagation and extraction) | `reconcile`, `interpolate`, `clear_events`, `debug_draw`. |
-| Render extraction | Nothing. The renderer reads the `PhysicsDebugDraw` resource (see "Debug draw") and the `Transform2d`/`GlobalTransform2d` values that `interpolate` already wrote. |
+| Render extraction | Nothing from this crate. The renderer reads the `Transform2d`/`GlobalTransform2d` values that `interpolate` already wrote. Feeding `PhysicsDebugDraw` into the renderer is facade glue (see "Debug draw"). |
 
 What the plugin needs from #106: (a) a way to order a system before and after the game's default systems in `FixedUpdate`, and late in `Update` before transform propagation; (b) the fixed-step alpha; (c) `Transform2d` (position `Vec2`, rotation as an angle in radians, scale) and `GlobalTransform2d`, with `Parent`/`Children` from the ECS (#49); (d) a system-parameter way to reach `&mut World`-level data: a resource, a query with `Changed<T>` and `Without<T>` filters, and `Commands`. Nothing else.
 
@@ -259,10 +259,10 @@ What the plugin needs from #106: (a) a way to order a system before and after th
 
 **reconcile** (at the start of every `FixedUpdate` tick, and in `Update` so a paused editor still has a world to draw and query). It is idempotent and does work proportional to what changed:
 1. Create: a query for `RigidBody`/`Collider` entities `Without<BodyLink>`/`Without<ColliderLink>` calls `add_body`/`add_collider`, and `Commands` inserts the link components (and `Velocity` for a body). Invalid settings go to the issue list and the entity is retried only after the component changes.
-2. Update: entities with `Changed<RigidBody>` or `Changed<Collider>` call `update_body`/`update_collider` (an inspector or MCP `ecs_set_field` edit takes effect this way). `Changed<GlobalTransform2d>` on a static collider (or a child collider) re-places it. A change to `PhysicsConfig::units_per_meter` rebuilds the whole world (every body re-created from its components).
+2. Update: entities with `Changed<RigidBody>` or `Changed<Collider>` call `update_body`/`update_collider` (an inspector or MCP `ecs_set_field` edit takes effect this way). **Moved static things are re-placed here.** A `Static` body never has its `Transform2d` written by the plugin, so `Changed<GlobalTransform2d>` on it is a reliable "someone moved it" signal (an editor drag, an `ecs_set_field` on `Transform2d`, a game system). The same holds for a parentless static collider and for a child collider of any body. Reconcile calls `set_pose` for a static body and re-places the collider (`update_collider` with the new local pose) for the others. A moved static body is a teleport: it gives nothing a velocity, so bodies resting on it are not carried (use a `Kinematic` body for a moving platform), and `set_pose` wakes the bodies touching it. A change to `PhysicsConfig::units_per_meter` rebuilds the whole world (every body re-created from its components).
 3. Remove: ECS v1 has no removal hooks or `RemovedComponents` (ECS spec non-goal), so reconcile **sweeps**: it walks its own body and collider tables (O(bodies), a few ns each) and removes any whose entity no longer has the component or the entity is dead (generation mismatch). This also handles despawn.
 
-**sync_in** (FixedUpdate, after game systems, before `step`), for each body entity that is not static:
+**sync_in** (FixedUpdate, after game systems, before `step`), for each dynamic or kinematic body entity (static bodies are handled by reconcile, above):
 - `Transform2d` differs from the pose the plugin last wrote (`written_pose`, stored with the link; compared by value, so it does not depend on change-detection internals): the game or the editor moved it, so it is a **teleport**: `set_pose`. The comparison is O(bodies) and a few ns each.
 - `Velocity` differs from `written_velocity`: `set_velocity`.
 - Queued runtime commands (`ApplyImpulse`) are applied and the queue is cleared.
@@ -284,7 +284,7 @@ impl PhysicsEvents {
 }
 ```
 
-The step system appends each tick's events (converted with `Entity::from_bits(user_data)`; an event whose entity is dead is dropped and counted). `clear_events` runs at the **end** of `Update`. So an `Update` system sees every event of the frame exactly once, even when two ticks ran, and a frame with zero ticks has no events. A `FixedUpdate` system uses `this_tick()`. The ECS has a double-buffered event type (#44, designed by #22); this resource is plugin-owned for the MVP because two-per-frame fixed ticks do not fit a once-per-frame buffer swap. If #22's event type handles fixed ticks, `PhysicsEvents` becomes a producer for it without an API change for the readers (open question 3).
+The step system appends each tick's events, converting each side with `Entity::from_bits(user_data)`. That returns `None` when the generation half is 0, and the ECS only hands out entities with a non-zero generation, so the plugin **never creates a body or collider with `user_data == 0`** (`Entity::to_bits()` is never 0). A `None` result therefore means the collider was not created by the plugin (a Stage 1 user of the same world, or a bug), and the event is **dropped and counted**, exactly like an event whose entity is dead (`PhysicsStats::events_dropped`, plus an issue). Stage 1 treats `user_data` as opaque and defaults it to 0. `clear_events` runs at the **end** of `Update`. So an `Update` system sees every event of the frame exactly once, even when two ticks ran, and a frame with zero ticks has no events. A `FixedUpdate` system uses `this_tick()`. The ECS has a double-buffered event type (#44, designed by #22); this resource is plugin-owned for the MVP because two-per-frame fixed ticks do not fit a once-per-frame buffer swap. If #22's event type handles fixed ticks, `PhysicsEvents` becomes a producer for it without an API change for the readers (open question 3).
 
 **Queries** (entity-level): `PhysicsQueries` wraps `&PhysicsWorld` and `PhysicsConfig` and mirrors the Stage 1 methods in world units, returning `Entity` instead of `ColliderId`. It is a plain resource accessor, not a new kind of system parameter, so it does not depend on #22.
 
@@ -303,7 +303,7 @@ pub struct DebugDrawOptions {
 }
 ```
 
-Stage 1 fills `DebugDraw` in physics units through rapier's `DebugRenderPipeline` with a backend that pushes lines and converts rapier's HSLA color to `Color`. Stage 2 exposes `PhysicsDebugDraw { enabled: bool, lines: Vec<DebugLine> }` **in world units**, filled in `Update` only when `PhysicsDebugSettings::enabled` is true (default false, so a shipped game pays nothing). `PhysicsDebugSettings` is a reflected resource holding `enabled` and the `DebugDrawOptions` fields. A renderer draws `lines` as thin 1 px lines on top of the scene (#107 owns a line primitive; if it has none in the MVP the editor draws the lines with egui's painter over the viewport, see open question 7). Circles are 16-segment polylines and boxes are 4 lines, so 1,000 colliders are about 10,000 to 20,000 lines (about 640 KB); `bounds` cuts this to what is visible.
+Stage 1 fills `DebugDraw` in physics units through rapier's `DebugRenderPipeline` with a backend that pushes lines and converts rapier's HSLA color to `Color`. Stage 2 exposes `PhysicsDebugDraw { enabled: bool, lines: Vec<DebugLine> }` **in world units**, filled in `Update` only when `PhysicsDebugSettings::enabled` is true (default false, so a shipped game pays nothing). `PhysicsDebugSettings` is a reflected resource holding `enabled` and the `DebugDrawOptions` fields. Physics does not depend on the renderer, and the renderer does not depend on physics (runtime crates have no edges between them). **The glue lives in the facade** (`crates/exitium/`, a hotspot): a facade system copies `PhysicsDebugDraw::lines` into whatever debug-line primitive the renderer offers (#107). That glue is issue G1 below; until it lands, the lines are readable data only (see open question 7). Circles are 16-segment polylines and boxes are 4 lines, so 1,000 colliders are about 10,000 to 20,000 lines (about 640 KB); `bounds` cuts this to what is visible.
 
 ### Diagnostics
 
@@ -318,28 +318,26 @@ Authoring mistakes must be visible to an agent without reading logs. `PhysicsSta
 
 ## MCP / editor surface
 
-Agent parity (rule 1), reflection as the source of truth (rule 2), mutation through the command bus (rule 3). Tool names are `physics_<verb>`. The command bus lives in `exitium_command` and the MCP server in `exitium_mcp` (#110 owns both); this section fixes what physics provides to them.
+Agent parity (rule 1), reflection as the source of truth (rule 2), mutation through the command bus (rule 3). **#110 builds the MCP tools and the editor panels generically**, from reflection and from the command and query registry. Physics therefore adds **no tool and no panel code, and no edge to `exitium_mcp` or `exitium_editor`** (the MCP server is a separate process that cannot link game types). Physics' job is to expose the following, in the game process, with reflection-derived schemas.
 
-**Inspect and edit bodies and colliders: no new tools.** `RigidBody`, `Collider` and `Velocity` are reflected components, so `ecs_get_entity`, `ecs_get_component`, `ecs_insert_component`, `ecs_set_field` and `ecs_remove_component` (ECS spec) already read and edit them, and their schemas (ranges, defaults, descriptions, the `Shape` enum) come from reflection with nothing hand-written. A `SetField` on `Collider.material.friction` reaches rapier through `Changed<Collider>` in reconcile. The same holds for the editor inspector. Undo is the command bus's existing undo for these commands.
+**Reflected components** (inspect and edit with the generic ECS tools and the inspector; `Changed<T>` in reconcile applies an edit): `RigidBody`, `Collider` (with `Shape`, `Material`, `CollisionLayers`, `BodyKind`, `CombineRule`) and `Velocity`. Ranges, defaults, descriptions and the `Shape` enum come from the `#[derive(Reflect)]` attributes, never from a parallel schema. Undo is the command bus's undo for the generic component commands.
 
-| Capability | MCP tool | Command or read API | Editor | Built from |
-|---|---|---|---|---|
-| World statistics and issues | `physics_get_stats` (read) | none | Physics panel, "Stats" tab | `PhysicsStats`: counts by kind, awake and sleeping, contact pairs, last step ms, `tick`, events dropped, `issues` |
-| One body's simulation state | `physics_get_body { entity }` (read) | none | Inspector shows it under the body | `PhysicsWorld::body_state`, `contacts_of`: pose, velocity, sleeping, mass, contacts with entity and normal |
-| Read the config | `physics_get_config` (read) | none | Settings, "Physics" section | `PhysicsConfig` (reflected resource) |
-| Change the config (gravity, `units_per_meter`, `solver_iterations`, `max_events`) | `physics_set_config` | `SetPhysicsConfig { patch }`; undo restores the previous values | same section, generated widgets | `PhysicsConfig` |
-| Toggle and configure debug draw | `physics_set_debug_draw` | `SetDebugDraw { enabled, options }`; undo restores | viewport toolbar toggle and an options popup | `PhysicsDebugSettings` |
-| Ray, point, overlap and shape-cast queries | `physics_raycast`, `physics_overlap_point`, `physics_overlap_shape`, `physics_shape_cast` (all read) | none | Physics panel, "Query" probe (click to cast from a point) | `PhysicsQueries` |
-| Apply an impulse to a body | `physics_apply_impulse { entity, impulse, point? }` | `ApplyImpulse` | none | `PhysicsWorld::apply_impulse` |
+**Reflected resources** (readable and editable through the generic resource access of #110): `PhysicsConfig` (gravity, `units_per_meter`, `solver_iterations`, `max_events`), `PhysicsDebugSettings` (`enabled` plus the `DebugDrawOptions` fields), and `PhysicsStats` (read-only: counts by body kind, awake and sleeping, contact pairs, last step in ms, `tick`, `events_dropped`, `issues`). A debug draw toggle in the editor is an edit of `PhysicsDebugSettings::enabled`.
+
+**Commands** (typed, serializable, registered with the command registry from the plugin's `commands.rs`; if #110's generic resource-field command covers resources, the first two are thin wrappers over it, open question 5):
+
+| Command | Effect | Undo |
+|---|---|---|
+| `SetPhysicsConfig { patch }` | change `PhysicsConfig` fields | previous values |
+| `SetDebugDraw { enabled, options }` | change `PhysicsDebugSettings` | previous values |
+| `ApplyImpulse { entity, impulse, point? }` | queue an impulse, applied in the next `sync_in` | **none**: a runtime action, not an authoring edit. An impulse is a one-way change of simulation state, and replaying it on a restored scene would not reproduce the world. #110 must let a command declare "no undo"; until it does, this command is not registered. |
+
+**Queries** (read-only, registered as named queries with the registry's read-only kind, results as JSON built from reflected result types `RayHit`, `ShapeHit`, `ContactInfo`, `BodyState`): `raycast`, `overlap_point`, `overlap_shape`, `shape_cast` (from `PhysicsQueries`), and `body_state { entity }` (pose, velocity, sleeping, mass, contacts with entity and normal). Entities travel as `"{index}v{generation}"` strings, vectors as `[x, y]`, lengths in world units. Whether these are registered as commands with no mutation or through a separate read registry is #110's decision (open question 5); physics only provides the functions and the reflected result types.
 
 Notes:
-- Entities travel as `"{index}v{generation}"` strings, vectors as `[x, y]`, lengths in world units. A hit is `{ entity, point, normal, distance }`.
-- `SetPhysicsConfig` and `SetDebugDraw` are typed, serializable commands with undo that live in the plugin's `commands.rs`. If #110's generic resource-field command covers resources, they are thin wrappers over it and keep their tool names (open question 5).
-- `ApplyImpulse` is a **runtime action**, not an authoring edit: it has no undo (an impulse is a one-way change of simulation state, and replaying it from a restored scene would not reproduce the world). It is queued and applied in the next `sync_in`, so it only has an effect while ticks run. The command bus spec (#110) must allow a command to declare "no undo" for this; until it does, the tool is not registered.
-- Read tools run at a sync point between schedule runs against the world as of the last reconcile. A collider created by `ecs_spawn_entity` is not queryable until the next `Update`. The read tools return the world `tick` so an agent can tell.
-- The agent-parity test (#110) checks that every public Stage 2 command and read API in the table has a tool.
-
-The physics-side API (the commands, `PhysicsQueries`, `PhysicsStats`) lands in `exitium_physics`. The `physics_*` tool wrappers land in `exitium_mcp` and the panels in `exitium_editor`. They are separate issues against the crates #110 defines (see "Implementation issues").
+- Reads run at a sync point between schedule runs against the world as of the last reconcile. A collider created by a spawn command is not queryable until the next `Update`, so every query result carries the world `tick`.
+- The parity test (#110) checks every component, resource, command and query above is reachable through the generic surface.
+- The editor's viewport toggle, stats tab and query probe are generic panels of #110, not physics code. Collider gizmos are a non-goal.
 
 ## Performance
 
@@ -354,8 +352,8 @@ A one-off probe (scratch crate, not committed; rapier2d 0.36.1 with the Stage 1 
 | `step`, 200 awake bodies and 5,000 static colliders | mean <= 1.0 ms |
 | `step`, 2,000 bodies all asleep | <= 0.05 ms |
 | Pose snapshot (`prev` and `pose`) overhead inside `step` | <= 100 ns per awake body |
-| `cast_ray`, 10,000 static colliders | <= 2 us per call |
-| `overlap_shape` (circle), 10,000 static colliders | <= 5 us per call |
+| `cast_ray`, 10,000 static colliders | <= 2 us per call (<= 4 us at 100,000) |
+| `overlap_shape` (circle), 10,000 static colliders | <= 5 us per call (<= 10 us at 100,000) |
 | `debug_draw`, 1,000 colliders, `bounds: None` | <= 0.5 ms and no allocation after warm-up |
 | Stage 2 per tick, 1,000 bodies (200 awake): reconcile with nothing changed, `sync_in` and `write_back` | <= 0.15 ms in total |
 | Stage 2 `interpolate`, 1,000 awake bodies | <= 0.05 ms |
@@ -365,7 +363,18 @@ A one-off probe (scratch crate, not committed; rapier2d 0.36.1 with the Stage 1 
 
 Complexity: `step` is O(awake bodies plus contacts); the broad phase is a BVH, so queries are O(log n). Reconcile is O(changed plus sweep), the sweep being O(bodies) with a few ns per body. Write-back and interpolation are O(awake).
 
-**Benchmarks to add** (`docs/benchmarks.md` conventions, IDs `<crate>/<area>/<case>` with the size as the parameter; scenes are built from a seeded linear congruential generator in the bench file, with no `rand` dependency): `exitium_physics/step/bin` (500, 1,000, 2,000), `exitium_physics/step/static_5000_active_200`, `exitium_physics/step/asleep_2000`, `exitium_physics/query/ray_10k`, `exitium_physics/query/overlap_circle_10k`, `exitium_physics/debug/draw_1000`, `exitium_physics/sync/tick_1000`, `exitium_physics/sync/interpolate_1000`. Each ships with the change that adds the hot path (design rule 4), and each bench file starts with a `//!` doc that says what is measured and why it is hot.
+**Benchmarks to add** (`docs/benchmarks.md` conventions: IDs `<crate>/<area>/<case>` with the size as criterion's parameter, `Throughput::Elements`, inputs built outside `b.iter` from a seeded linear congruential generator in the bench file with no `rand` dependency, `black_box` on inputs and outputs):
+
+| ID | Sizes | Note |
+|---|---|---|
+| `exitium_physics/step/bin` | 1,000 and 2,000 awake bodies | 1k is the convention's smallest size; 2k is the MVP target on min-spec |
+| `exitium_physics/step/static_active` | 5,000 static colliders with 200 awake bodies | one size: it measures the static-to-active ratio |
+| `exitium_physics/step/asleep` | 2,000 sleeping bodies | |
+| `exitium_physics/query/ray` and `.../query/overlap_circle` | 1,000, 10,000 and 100,000 static colliders | 100k is a real size here (BVH depth), so the convention's 1k and 100k are both kept, with 10k as the MVP scale |
+| `exitium_physics/debug/draw` | 1,000 colliders | |
+| `exitium_physics/sync/tick` and `.../sync/interpolate` | 1,000 bodies (200 awake) | Stage 2 |
+
+**Sizes that differ from the convention (1k, 100k, 1M), and why.** For dynamic bodies, 100k and 1M are meaningless: a single-threaded rapier step at that count takes seconds, the min-spec target is about 2,000 bodies, and the 1M-entity benches are cut from the MVP (contract). For queries, 1M colliders would only measure memory. Each bench file's `//!` doc states this, as the convention requires for a dropped size. Each bench ships with the change that adds the hot path (design rule 4).
 
 ## Test plan
 
@@ -385,11 +394,12 @@ Stage 2 (a headless `App`, no window):
 - A `SetField` on `Collider.material.friction` (through reflection) changes the simulation. A `Changed` edit with an invalid value yields an issue and leaves the old setting.
 - Teleport: writing `Transform2d` in a `FixedUpdate` system and in an `Update` system moves the body and does not blend. The plugin's own writes are never mistaken for teleports (no body moves a second time on its own).
 - A frame with 0 ticks and a frame with 2 ticks: `interpolate` draws between `prev` and `pose` and the final pose matches the Stage 1 run; `interpolate = false` shows the exact pose.
-- Events: delivered once per frame to an `Update` system and once per tick to a `FixedUpdate` system, with zero ticks giving none; a dead entity's event is dropped and counted.
+- Events: delivered once per frame to an `Update` system and once per tick to a `FixedUpdate` system, with zero ticks giving none; an event whose entity is dead, or whose `user_data` is 0 or does not decode (`Entity::from_bits` returns `None`), is dropped and counted.
+- Moving a `Static` body or a static collider (`Transform2d` write from a system, as an editor drag would) re-places it in rapier; a body resting on it wakes; the plugin creates no body or collider with `user_data == 0`.
 - A compound body (child colliders) has the summed mass. A non-root dynamic body is skipped with an issue.
 - Scene round trip: save the reflected components, restore, run: the world is rebuilt and the bodies resume with their `Velocity`.
 - Commands: `SetPhysicsConfig` and `SetDebugDraw` apply and undo. `units_per_meter` change rebuilds the world with the same visible result.
-- Parity: every row of the MCP table has a command or read API (checked with #110's parity test).
+- Parity: every component, resource, command and query listed in "MCP / editor surface" is reachable through the generic registry (checked with #110's parity test).
 
 ## Dependencies
 
@@ -405,69 +415,258 @@ No other dependency: no `serde` (serialization is reflection), no `rand`, no `bi
 
 ### Intake wiring (for the Stage 1 and Stage 2 intake PRs, not issues in this spec)
 
-- **Stage 1 intake**: root `Cargo.toml` `[workspace.dependencies]` gets `rapier2d` as above. `crates/exitium_physics/Cargo.toml` gets `[dependencies] exitium_core, rapier2d`, `[dev-dependencies] criterion`, and no features yet. Acceptance: `cargo build -p exitium_physics --target wasm32-unknown-unknown`, `cargo deny check`. The `[[bench]]` stanzas are added by the issues that create the bench files (they are inside the crate and do not change `Cargo.lock`).
-- **Stage 2 intake**: `exitium_physics` gets `exitium_ecs`, `exitium_app`, `exitium_reflect` and `exitium_command` as optional dependencies, and the features `reflect = ["dep:exitium_reflect"]`, `plugin = ["reflect", "dep:exitium_ecs", "dep:exitium_app", "dep:exitium_command"]`, `default = ["plugin"]`. New crate edges: `exitium_physics -> exitium_ecs`, `-> exitium_app`, `-> exitium_reflect`, `-> exitium_command`. The `exitium` facade re-export is a separate facade PR (high-risk area).
+The intake PRs add the union of every merged spec's list. This is physics' list: every dependency, crate edge, dev-dependency and feature its issues need, so no implementation issue touches `Cargo.lock` or a `Cargo.toml` dependency table.
+
+**Intake 1 (Stage 1):**
+- Root `Cargo.toml` `[workspace.dependencies]`: `rapier2d` as in the table above.
+- `crates/exitium_physics/Cargo.toml`: `[dependencies] exitium_core.workspace = true, rapier2d.workspace = true`; `[dev-dependencies] criterion.workspace = true`; no features yet.
+- New crate edge: `exitium_physics -> exitium_core`. No other edge.
+- Acceptance: `cargo build -p exitium_physics --target wasm32-unknown-unknown`, `cargo deny check`, and the transitive list above re-confirmed with `cargo tree`.
+- The `[[bench]]` stanzas are added by the issues that create the bench files. They are inside the crate and do not change `Cargo.lock`.
+
+**Intake 2 (Stage 2):**
+- `crates/exitium_physics/Cargo.toml`: optional dependencies `exitium_ecs`, `exitium_app`, `exitium_reflect` (and `exitium_reflect_derive` if `exitium_reflect` does not re-export the derive) and `exitium_command`; features `reflect = ["dep:exitium_reflect"]`, `plugin = ["reflect", "dep:exitium_ecs", "dep:exitium_app", "dep:exitium_command"]`, `default = ["plugin"]`. No new dev-dependency (the headless-app tests use `exitium_app`).
+- New crate edges: `exitium_physics -> exitium_ecs`, `-> exitium_app`, `-> exitium_reflect`, `-> exitium_command`.
+- Facade: `exitium -> exitium_physics` (the facade depends on every crate; its re-export and any glue are in G1).
+- **No edge** to `exitium_render`, `exitium_mcp`, `exitium_editor`, `exitium_platform`, `exitium_audio`, `exitium_assets`, `exitium_ui` or `exitium_scene`. Runtime crates have no edges between them.
 
 ## Implementation issues
 
-Each issue edits one crate, is about 600 changed lines or fewer, and has acceptance criteria. After this spec merges the architect files them into the Jam MVP milestone with the `file-issue` skill. `P1` to `P12` are placeholders, replaced by issue numbers when filed. Issues in `exitium_physics` share a crate, so the factory runs one at a time even where the dependencies below would allow two; the order is the dependency order. Stage 2 issues need the Stage 2 intake PR and the merged #106 spec (and the ECS and app crates) before they start.
+After this spec merges the architect files these into the Jam MVP milestone with the `file-issue` skill. `P1` to `P16` and `G1` are placeholders, replaced by issue numbers when filed; `intake-1` and `intake-2` are the intake PRs above. Each issue edits one crate (or, for G1, only the facade hotspot) and has the line estimate of its change (code, tests and docs) next to it; every estimate is at or under about 600. `exitium_physics` issues share a crate, so the factory runs one at a time even where the dependencies below would allow two; the list is in dependency order. Every Stage 1 issue is `Blocked by intake-1`. Every Stage 2 issue is `Blocked by intake-2` and by the merged and implemented #106 `App`/`Plugin` API (and the ECS, reflect and command crates where named).
 
-Common acceptance for every issue: `cargo xtask ci all` passes; new behavior has tests; each hot-path change ships its benchmark; module docs (`//!`) on every new module.
+**Common acceptance criteria for every issue:** `cargo xtask ci all` passes; new behavior has tests; each hot-path change ships its benchmark with the numbers in the PR body; every new module has `//!` docs; no rapier type is public; no `unsafe`.
 
-**P1. `feat(physics): settings types, ids and validation`**
-- Footprint: Edits `crates/exitium_physics/`; Governs none; Hotspots none (dependencies come from the intake PR); New crate edges none.
-- `types.rs`, `error.rs`, `convert.rs`: `BodyKind`, `RigidBody`, `Collider`, `Shape`, `Material`, `CombineRule`, `CollisionLayers`, `Velocity`, `BodyPose`, `BodyId`, `ColliderId`, `PhysicsError`; the glam 0.34 to 0.33 conversions; validation for every field (table tests); the crate `CLAUDE.md`; `reflect` feature `cfg_attr` hooks may wait for P7.
-- Blocked by: the Stage 1 intake PR.
+**Stage 1 (`exitium_physics`, depends on `exitium_core` and `rapier2d` only):**
 
-**P2. `feat(physics): PhysicsWorld lifecycle and step`**
-- `world.rs`: `new`, `set_gravity`, `add_body`, `add_collider`, `remove_*`, `update_*`, `set_pose`, `set_velocity`, `apply_impulse`, `step`, `body_state`, `active_bodies`, `body_user_data`, `collider_user_data`, `stats`. Behavior tests from the test plan (falling, resting, sleeping, restitution, friction, kinematic platform, `ccd`, layers). No rapier type public.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P1.
+**P1. `feat(physics): settings types, ids and validation`** (about 500 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `types.rs`, `error.rs`, `convert.rs`: `BodyKind`, `RigidBody`, `Collider`, `Shape`, `Material`, `CombineRule`, `CollisionLayers`, `Velocity`, `BodyPose`, `BodyId`, `ColliderId`, `PhysicsError`; the glam 0.34 to 0.33 conversions; the crate `CLAUDE.md`.
+- Acceptance:
+  - [ ] Every field has a documented default and range; each invalid value (NaN, infinity, negative size, polygon with 2, 65, collinear or duplicate points) returns a `PhysicsError`, in table tests plus a seeded garbage loop.
+  - [ ] `Shape::ConvexPolygon` hulls a slightly non-convex input.
+  - [ ] Conversions round-trip `Vec2` exactly.
+  - [ ] Builds for `wasm32-unknown-unknown`.
+- Blocked by: intake-1.
 
-**P3. `perf(physics): pose snapshots, interpolation, repeatability and step benchmarks`**
-- `BodyRecord`, `interpolated_pose`, snapshot in `step`, `set_pose` snap; the repeatability test; `benches/step.rs` with the `step/*` IDs and the `[[bench]]` stanza; the numbers in the PR body.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P2.
+**P2. `feat(physics): PhysicsWorld lifecycle`** (about 450 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `world.rs`: `new`, `set_gravity`, `add_body`, `add_collider`, `remove_body`, `remove_collider`, `update_body`, `update_collider`, `body_user_data`, `collider_user_data`; the rapier builder mapping (including `ActiveCollisionTypes` and `ActiveEvents`).
+- Acceptance:
+  - [ ] Add, update and remove a body and a collider; removing a body removes its colliders.
+  - [ ] A stale `BodyId` or `ColliderId` is rejected, also after the slot is reused.
+  - [ ] A parentless collider is static; a collider with a parent attaches with its local pose.
+  - [ ] `user_data` round-trips.
+- Blocked by: intake-1, P1.
 
-**P4. `feat(physics): collision and trigger events`**
-- `events.rs`: `CollisionEvent`, the collector, active collision types and events, `drain_events`, the overflow counter, `contacts_of`. Tests from the plan.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P2.
+**P3. `feat(physics): runtime control, step and body state`** (about 450 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `world.rs`: `set_pose`, `set_velocity`, `apply_impulse`, `step`, `tick`, `body_state`, `active_bodies`, `stats`; `StepStats`.
+- Acceptance:
+  - [ ] A ball falls `0.5 * g * t^2` within a tolerance; a box rests on a static floor and sleeps.
+  - [ ] Restitution 1 versus 0, friction 0 versus 1 on a slope, kinematic platform carries a body, `lock_rotation`, `gravity_scale`, `ccd` at a thin wall, and the layer rule in both directions.
+  - [ ] `step` returns `Err` for a negative or non-finite `dt`; `dt == 0` applies pending changes without NaN.
+  - [ ] `set_pose` on a static body re-places it and wakes touching bodies.
+- Blocked by: intake-1, P2.
 
-**P5. `feat(physics): raycasts and shape queries`**
+**P4. `perf(physics): pose snapshots, interpolation, repeatability and step benchmarks`** (about 350 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `BodyRecord`, the snapshot inside `step`, `interpolated_pose`, the `set_pose` snap; `benches/step.rs` and its `[[bench]]` stanza with the IDs and sizes from "Performance".
+- Acceptance:
+  - [ ] `interpolated_pose` at alpha 0, 0.5 and 1, shortest-arc angle across the pi wrap; sleeping bodies stay put; `set_pose` does not blend.
+  - [ ] Two worlds fed the same scripted inputs for 600 steps give bit-identical poses and events.
+  - [ ] Bench results are in the PR body and meet the budgets (mean and spike guard).
+- Blocked by: intake-1, P3.
+
+**P5. `feat(physics): collision and trigger events`** (about 400 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `events.rs`: `CollisionEvent`, `CollisionKind`, the `Mutex<Vec>` collector, `drain_events`, the overflow counter, `contacts_of`.
+- Acceptance:
+  - [ ] A sensor reports `Started` then `Stopped` once; a kinematic body triggers a static sensor; `report_events = false` is silent.
+  - [ ] Events carry both `user_data` values and survive the removal of a body in the same tick.
+  - [ ] Overflow past `max_events` is counted in `stats`.
+- Blocked by: intake-1, P3.
+
+**P6. `feat(physics): raycasts and shape queries`** (about 550 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
 - `query.rs`: `QueryFilter`, `Ray`, `RayHit`, `ShapeHit`, `cast_ray`, `cast_ray_all`, `colliders_at_point`, `overlap_shape`, `cast_shape`, `update_queries`; `benches/query.rs`.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P2.
+- Acceptance:
+  - [ ] Hit point, normal and distance are correct; `cast_ray_all` is sorted by distance, ties by `ColliderId`.
+  - [ ] Filters exclude a body, sensors and non-matching layers; a ray starting inside a collider is defined.
+  - [ ] A zero or non-finite ray returns `None`.
+  - [ ] Bench meets the budgets at 1k, 10k and 100k colliders.
+- Blocked by: intake-1, P3.
 
-**P6. `feat(physics): debug draw data`**
-- `debug.rs`: `DebugDraw`, `DebugLine`, `DebugKind`, `DebugDrawOptions`, the `DebugRenderPipeline` backend (color conversion, `bounds`, `max_lines`); `benches/debug.rs`. No dependency on `exitium_render`.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P2.
+**P7. `feat(physics): debug draw data`** (about 450 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `debug.rs`: `DebugDraw`, `DebugLine`, `DebugKind`, `DebugDrawOptions`, the `DebugRenderPipeline` backend (color conversion, `bounds`, `max_lines`); `benches/debug.rs`.
+- Acceptance:
+  - [ ] A box gives 4 `Collider` lines at the right corners; `bounds` culls; `max_lines` sets `truncated`.
+  - [ ] No allocation after warm-up; bench meets the budget.
+  - [ ] No dependency on `exitium_render`.
+- Blocked by: intake-1, P3.
 
-**P7. `feat(physics): reflected components, resources and PhysicsPlugin skeleton`**
-- `cfg_attr(feature = "reflect", derive(Reflect))` on the settings types with `range` and doc attributes; `plugin/components.rs`, `plugin/config.rs`: `Component` impls, `BodyLink`, `ColliderLink`, `PhysicsConfig`, `PhysicsDebugSettings`, `PhysicsStats`; `PhysicsPlugin` that registers the types and inserts the resources, in the contract's terms for the #106 API. Test: every type registers and round-trips through reflection.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P2, #106 (spec merged and its `App`/`Plugin` implemented), the reflect derive (#34, #35, #37), ECS component registry (#39, #50), and the Stage 2 intake PR.
+**Stage 2 (`plugin` module of `exitium_physics`):**
 
-**P8. `feat(physics): reconcile bodies and colliders with the ECS`**
-- `plugin/reconcile.rs`: create, update (`Changed`), remove (sweep), compound children, hierarchy rules, `units_per_meter` rebuild, issues list. Headless-app tests from the plan.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P7.
+**P8. `feat(physics): reflected components, resources and PhysicsPlugin skeleton`** (about 500 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `cfg_attr(feature = "reflect", derive(Reflect))` with `range` and doc attributes on the settings types; `plugin/components.rs`, `plugin/config.rs`: `Component` impls, `BodyLink`, `ColliderLink`, `PhysicsConfig`, `PhysicsDebugSettings`, `PhysicsStats`; `PhysicsPlugin` registering the types and inserting the resources, in contract terms for #106.
+- Acceptance:
+  - [ ] Every listed type registers and round-trips through reflection; `BodyLink` and `ColliderLink` are not reflected.
+  - [ ] Defaults match the spec; the plugin builds the resources in a headless `App`.
+  - [ ] Builds for `wasm32-unknown-unknown`.
+- Blocked by: intake-2, P1, P3, the reflect derive (#34, #35, #37) and the ECS component registry (#39, #50).
 
-**P9. `feat(physics): fixed-step system, Transform2d sync and interpolation`**
-- `plugin/step.rs`: `sync_in`, `step`, `write_back`, `interpolate`, teleport detection, the ordering requirements, the alpha from #106; `benches/sync.rs`.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P3, P8, #106's fixed-step alpha.
+**P9. `feat(physics): reconcile, create and remove`** (about 450 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `plugin/reconcile.rs` (create and sweep half): create bodies and colliders for entities without links, insert `BodyLink`, `ColliderLink` and `Velocity`, the sweep that removes bodies and colliders of dead entities or removed components, the issue list, validation reports, `user_data = Entity::to_bits()` (never 0).
+- Acceptance:
+  - [ ] Spawning an entity with `RigidBody` and `Collider` creates a body; despawning it removes it; removing only the `Collider` removes the collider.
+  - [ ] An invalid value yields an issue, no body, and a retry only after the component changes.
+  - [ ] A non-root dynamic body is skipped with an issue; a non-finite `Transform2d` is an issue.
+- Blocked by: intake-2, P8.
 
-**P10. `feat(physics): entity-level events and queries`**
-- `plugin/events.rs`, `plugin/queries.rs`: `PhysicsEvents` (`this_tick`, `since_frame_start`, `clear_events`), `PhysicsQueries`. Tests from the plan.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P4, P5, P9.
+**P10. `feat(physics): reconcile, updates, static re-place, hierarchy and rebuild`** (about 500 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `plugin/reconcile.rs` (update half): `Changed<RigidBody>`/`Changed<Collider>` updates, **re-placing moved static bodies, parentless static colliders and child colliders from `Changed<GlobalTransform2d>`**, compound children of the nearest ancestor body, the `units_per_meter` rebuild.
+- Acceptance:
+  - [ ] A reflection `SetField` on `Collider.material.friction` changes the simulation; an invalid edit keeps the old setting and adds an issue.
+  - [ ] Moving a static body's `Transform2d` (editor or game system) moves its rapier body; a body touching it wakes; bodies on it are not carried.
+  - [ ] A compound body has the summed mass; a child collider moved in the hierarchy is re-placed.
+  - [ ] Changing `units_per_meter` rebuilds the world with the same visible result.
+- Blocked by: intake-2, P9.
 
-**P11. `feat(physics): debug draw resource and stats`**
-- `plugin/debug.rs` and the `PhysicsStats` update: `PhysicsDebugDraw` filled in `Update` only when enabled, world-unit conversion, stats and issues.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P6, P9.
+**P11. `feat(physics): fixed-step system, sync_in and write_back`** (about 450 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `plugin/step.rs`: the `FixedUpdate` ordering requirements, `sync_in` (teleport detection by value, `Velocity`, queued impulses), `step`, `write_back` (active bodies only; exact pose for non-interpolated bodies).
+- Acceptance:
+  - [ ] A `Transform2d` write in a `FixedUpdate` system teleports the body; the plugin's own writes are never read back as a teleport.
+  - [ ] A `Velocity` write takes effect in the same tick; sleeping and static bodies keep quiet change ticks.
+  - [ ] Zero and two ticks per frame behave.
+- Blocked by: intake-2, P4, P10.
 
-**P12. `feat(physics): typed commands for config, debug draw and impulses`**
-- `plugin/commands.rs`: `SetPhysicsConfig`, `SetDebugDraw`, `ApplyImpulse` with undo (the last has none, see "MCP / editor surface"), registered with the command bus.
-- Footprint: Edits `crates/exitium_physics/`; none; none; none. Blocked by: P11, #110's command bus implementation and the Stage 2 intake PR.
+**P12. `perf(physics): interpolation system and sync benchmarks`** (about 350 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `plugin/step.rs` (interpolate): late `Update` system, teleport check before overwrite, the fixed-step alpha from #106; `benches/sync.rs`.
+- Acceptance:
+  - [ ] A frame with 0 and a frame with 2 ticks draws between `prev` and `pose`; `interpolate = false` shows the exact pose.
+  - [ ] An `Update` write or an editor drag of a body is applied, not overwritten.
+  - [ ] Benches meet the budgets.
+- Blocked by: intake-2, P11, #106's fixed-step alpha.
 
-**Other crates (filed against the specs and crates #110 and #107 define, listed here so the physics surface is complete):**
+**P13. `feat(physics): entity-level events and queries`** (about 450 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `plugin/events.rs`, `plugin/queries.rs`: `PhysicsEvents` (`this_tick`, `since_frame_start`, `clear_events`), `PhysicsQueries`.
+- Acceptance:
+  - [ ] An `Update` system sees each event once per frame (also with 2 ticks); a `FixedUpdate` system sees only the current tick's; zero ticks give none.
+  - [ ] An event whose entity is dead or whose `user_data` does not decode (`Entity::from_bits` returns `None`) is dropped and counted in `events_dropped`.
+  - [ ] Queries return entities and world units.
+- Blocked by: intake-2, P5, P6, P11.
 
-**M1. `feat(mcp): physics_* tools`** in `exitium_mcp`: the seven read tools and three command tools in the MCP table, with schemas from reflection and the parity test row. Footprint: Edits `crates/exitium_mcp/`; none; none; none. Blocked by: P12, P10, and the `exitium_mcp` tool registry issue from #110.
+**P14. `feat(physics): debug draw resource and stats`** (about 300 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `plugin/debug.rs`, the `PhysicsStats` update: `PhysicsDebugDraw` filled in `Update` only when enabled, in world units; counts, last step time and issues.
+- Acceptance:
+  - [ ] Nothing is computed when `enabled` is false.
+  - [ ] Lines are in world units; `bounds` is applied.
+  - [ ] `PhysicsStats` reports the counts and issues.
+- Blocked by: intake-2, P7, P11.
 
-**E1. `feat(editor): physics debug draw toggle, stats and query panel`** in `exitium_editor`: the viewport toggle, the Stats tab and the Query probe. Footprint: Edits `crates/exitium_editor/`; none; none; none. Blocked by: P11, P12, and the editor shell and viewport issues from #110, plus the debug-line primitive from #107 (or an egui painter fallback).
+**P15. `feat(physics): typed commands`** (about 400 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- `plugin/commands.rs`: `SetPhysicsConfig`, `SetDebugDraw`, `ApplyImpulse`, registered with the command registry from #110.
+- Acceptance:
+  - [ ] The first two apply and undo; `units_per_meter` through the command rebuilds the world.
+  - [ ] `ApplyImpulse` is queued and applied in the next `sync_in`; it declares no undo and is registered only when the registry supports that.
+  - [ ] Each command round-trips through its reflected schema.
+- Blocked by: intake-2, P14, #110's command bus implementation.
+
+**P16. `feat(physics): register queries and stats with the #110 registry`** (about 300 lines)
+- Footprint:
+  - Edits: `crates/exitium_physics/`
+  - Governs: none
+  - Hotspots: none
+  - New crate edges: none
+- The registrations of `raycast`, `overlap_point`, `overlap_shape`, `shape_cast` and `body_state` as read-only queries, and of the reflected resources and result types, using whatever kind #110 defines (open question 5).
+- Acceptance:
+  - [ ] Every item in "MCP / editor surface" is registered, with a schema derived from reflection.
+  - [ ] #110's parity test passes for physics.
+  - [ ] Results carry the world `tick`.
+- Blocked by: intake-2, P13, P15, #110's registry implementation.
+
+**Facade glue (not an `exitium_physics` edit):**
+
+**G1. `feat(exitium): physics re-export and debug draw into the renderer`** (about 200 lines)
+- Footprint:
+  - Edits: none
+  - Governs: none
+  - Hotspots: `crates/exitium/` (the facade)
+  - New crate edges: none (`exitium -> exitium_physics` is in intake-2)
+- Re-export the physics API from the facade (`exitium::physics`), add `PhysicsPlugin` to the default plugin set, and add the facade system that copies `PhysicsDebugDraw::lines` into the renderer's debug-line primitive (#107).
+- Acceptance:
+  - [ ] A game depending only on `exitium` can spawn a `RigidBody` and run.
+  - [ ] With `PhysicsDebugSettings::enabled`, lines reach the renderer; with it off, nothing is copied.
+  - [ ] The facade API change gets the extra reviewer scrutiny of ADR-0005 (high-risk area).
+- Blocked by: intake-2, P14, the render implementation of #107, and the facade spec or issue that owns `crates/exitium/` at the time.
 
 ## Open questions
 
@@ -477,7 +676,7 @@ Common acceptance for every issue: `cargo xtask ci all` passes; new behavior has
 4. **Cross-platform determinism.** Off for the MVP. When multiplayer needs the server and a client to agree beyond a tolerance (INTERVIEW R7), try rapier's `enhanced-determinism` feature (the changelog says it no longer costs measurable performance) behind a `deterministic` feature, and add a native-versus-wasm state-hash test. Also decide then whether to build wasm with `simd128`.
 5. **Resource edit commands.** Does #110's command bus have a generic "set a resource field" command? If yes, `SetPhysicsConfig` and `SetDebugDraw` become wrappers of it.
 6. **Character controller.** rapier ships a `KinematicCharacterController` (slopes, steps, snapping). A platformer feels better with it than with a dynamic body. Add it as a Stage 3 helper if the jam game needs it, as a `CharacterController` component. It does not change anything above.
-7. **Debug lines in the viewport.** If #107 has no line primitive in the MVP, the editor draws `PhysicsDebugDraw::lines` with egui's painter over the viewport, and the game binary without the editor shows no debug draw.
+7. **Debug lines in the renderer.** If #107 has no debug-line primitive in the MVP, G1 has nothing to feed, and `PhysicsDebugDraw::lines` stays readable data (for example for the facade or the editor to draw later). Whoever owns the facade glue decides; physics does not change.
 8. **Edit-mode world.** Reconcile also runs in `Update`, so a paused editor has bodies for debug draw, picking and queries. If #110's play-and-stop snapshot restore makes this awkward (the world must be rebuilt on stop), the rebuild is already free because the world is derived state.
 9. **Second glam version.** rapier on glam 0.33 next to the workspace's 0.34.3 costs a component copy at the boundary and a second crate in the build. Revisit when rapier moves to glam 0.34 (`convert.rs` is the only place to change).
 10. **Joints and tilemap colliders.** First follow-ups after the MVP: joints (a `Joint` component and `PhysicsWorld::add_joint`), static collider merging for tilemaps, and concave shape decomposition.

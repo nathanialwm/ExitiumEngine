@@ -69,7 +69,7 @@ Later consumers:
 | A4 | Agent roles | See the role table below. |
 | A5 | AI vendor | Claude only. |
 | A6 | Where agents run | **(b)**: on the dev machine through T3 Code with git worktrees. The Docker runners are for CI only. |
-| A7 | Parallelism | One branch/worktree per issue. **Cap: 3 concurrent agents.** |
+| A7 | Parallelism | One branch/worktree per issue. **Cap: 3 concurrent agents.** Raised to 8 by #103, with a footprint conflict check (`factory-run` step 3). |
 | A8 | Budget | **Do not start a new issue when less than 5% of session usage remains.** Work already in flight may finish. |
 | A9 | Work intake | GitHub Issues; GitHub Projects for the roadmap. Agents may file issues, but **each agent-filed issue must be approved by a review agent (Sonnet, medium effort)** before work begins. |
 | A10 | Specs | Spec/ADR required for systems-level work; not for small tasks. |

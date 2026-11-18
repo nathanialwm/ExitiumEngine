@@ -2,7 +2,7 @@
 name: impl-rendering
 description: Implements GPU and rendering work: exitium_render, shaders, the pixel-art pipeline, camera modes, 2D lighting, GPU compute.
 model: claude-opus-5-5
-effort: max
+effort: xhigh
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 

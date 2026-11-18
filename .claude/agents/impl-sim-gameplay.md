@@ -2,7 +2,7 @@
 name: impl-sim-gameplay
 description: Implements incremental-sim and gameplay systems: exitium_sim, exitium_save, Num formatting, offline progress, prestige, automation.
 model: claude-opus-5-5
-effort: max
+effort: xhigh
 tools: Read, Edit, Write, Bash, Grep, Glob
 ---
 

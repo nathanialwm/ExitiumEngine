@@ -70,8 +70,8 @@ Issue (owner / agent-filed)
   → Triage: labels, size, specialization, Project placement
   → [systems-level? Architect writes spec/ADR → AI review → merge]
   → Orchestrator picks it up
-      (≤3 concurrent, only if >5% session usage remains)
-  → Implementer (Opus 5.5 max, specialized) in its own worktree/branch
+      (≤8 concurrent, only with conflict-checked disjoint footprints, only if >5% session usage remains)
+  → Implementer (Opus 5.5 xhigh, specialized) in its own worktree/branch
   → Test Writer adds tests → Test Reviewer checks for redundancy and gaps
   → Perf Agent runs benches when hot paths changed
   → PR opened (Conventional Commit title, linked issue)

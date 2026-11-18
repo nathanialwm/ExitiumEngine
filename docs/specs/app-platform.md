@@ -17,7 +17,7 @@ The spec decides these things so that the implementation issues need no further 
 - **`Time` is an app resource** that carries the fixed-step alpha, and the loop clamps both a long frame and the number of catch-up ticks.
 - **Input edges are relative to the schedule that reads them.** `just_pressed` inside `FixedUpdate` means "since the previous tick", and inside `Update` it means "since the previous frame", so a jump pressed on a frame with no tick is not lost.
 - **World space is y up**, rotation is counter-clockwise radians, and `Transform2d` is the only transform an author writes.
-- **No winit type appears in the public API** except one deliberate hook for the editor, and **`exitium_platform` hands the renderer a window handle** through a type that implements the raw handle traits, without depending on render.
+- **No winit type appears in the public API** except two deliberate ones for the editor (`WindowHandler::raw_event` and `PlatformWindow::as_winit`), and **`exitium_platform` hands the renderer a window handle** through a type that implements the raw handle traits, without depending on render.
 - **Everything an agent needs is reflected data and events.** This spec adds no command to the bus.
 
 Versions were checked on 2026-11-18 (crates.io): `winit` 0.30.13 stable (0.31.0-beta.4 is the newest and is not used), `web-sys` 0.3.107, `wasm-bindgen` 0.2.130, `web-time` 1.1.0.
@@ -66,7 +66,7 @@ exitium_platform/src/
   lib.rs
   input/key.rs     KeyCode, MouseButton                                       safe
   input/button.rs  ButtonInput<K>, EdgeView                                   safe
-  input/event.rs   InputEvent, PlatformEvent                                  safe
+  input/event.rs   InputEvent, PlatformEvent, InjectedInput                      safe
   input/state.rs   InputState, InputSnapshot                                  safe
   window/mod.rs    WindowConfig, WindowInfo                                   safe
   window/handle.rs PlatformWindow (raw handle traits), PrimaryWindow          safe
@@ -261,23 +261,23 @@ impl GlobalTransform2d { pub fn translation(&self) -> Vec2; pub fn affine(&self)
 
 `Vec2` and `Affine2` already reflect as structs of their components (reflect-model). The type names are **pinned**, because scenes persist `Transform2d` and a module move must not change the schema. `GlobalTransform2d` carries the `derived` marker so that the scene spec (#111) skips it on save and the inspector shows it read-only (open question 3). Saving one would be harmless: propagation recomputes it on load.
 
-**Hierarchy** comes from the ECS (#49): `Parent(Entity)` and `Children(Vec<Entity>)`, kept consistent by `Commands` helpers there. A child's global is `parent_global * child_local.to_affine()`. A non-uniform parent scale with a rotated child produces shear, which an `Affine2` holds exactly, so `GlobalTransform2d` is an affine and not a decomposed transform.
+**Hierarchy** comes from the ECS (#49): `Parent(Entity)` and `Children(Vec<Entity>)`, kept consistent by `Commands` helpers there. **Reparenting goes through those helpers** (`set_parent`, `add_child`, `remove_child`, and the bus's `Reparent`, which uses them). A raw overwrite or removal of `Parent` that leaves `Children` stale is unsupported: propagation trusts `Children` to find nodes and checks `Parent` to confirm them (below). A child's global is `parent_global * child_local.to_affine()`. A non-uniform parent scale with a rotated child produces shear, which an `Affine2` holds exactly, so `GlobalTransform2d` is an affine and not a decomposed transform.
 
 **Systems (`PostUpdate`, set `PROPAGATE`).**
 
-1. `ensure_global_transforms`: `Query<Entity, (With<Transform2d>, Without<GlobalTransform2d>)>` and `Commands::insert(GlobalTransform2d::default())`. The ordered sync point (#22) applies it before step 2, so an entity spawned with only a `Transform2d` has a correct global in the same frame.
+1. `ensure_global_transforms`: two queries and `Commands`. (a) `(With<Transform2d>, Without<GlobalTransform2d>)` gets `GlobalTransform2d::default()`. (b) `(With<Children>, Without<Transform2d>)` gets `Transform2d::IDENTITY` and `GlobalTransform2d::default()` together. **An entity that has children is spatial:** a grouping entity with no transform, common in scenes, would otherwise leave its children unreachable (a node is reached only through a transformed parent). The ordered sync point (#22) applies the inserts before step 2, so a freshly spawned entity or group has a correct global in the same frame. An entity with `Children` that is not meant to be spatial (a non-spatial grouping) gets an identity transform it ignores; that cost is accepted.
 2. `propagate_transforms`: a full top-down pass, with **value comparison instead of change flags**.
    - **Roots** (no `Parent`): `Query<(&Transform2d, &mut GlobalTransform2d, Option<&Children>), Without<Parent>>`. The new global is `local.to_affine()`. It is **written only if it differs bitwise from the stored value**. A root with `Children` goes on a scratch stack together with its global.
-   - **Descent:** pop `(entity, global)`, read its `Children`, and for each child compute `global * local.to_affine()`, write it if it differs, and push the child if it has children. The scratch stack is a `Local<Vec<..>>` reused across frames. A child that was despawned between the parent's `Children` update and now is skipped (`get_mut` returns `None`). A child with a dangling `Parent` (parent despawned without `despawn_recursive`) is not reachable from any root and keeps its last global (the hierarchy helpers of #49 prevent this).
-   - **Queries:** the write queries are `Without<Parent>` (roots) and `With<Parent>` (nodes), so they are filter-disjoint and the system is accepted (#22, conflict rule 3). A read-only `Query<&Transform2d, With<Parent>>` and `Query<&Children>` supply the other reads.
-3. **Why compare values and not use `Changed<Transform2d>`.** The ECS cannot observe a component removal (#21), so a child that is detached by removing its `Parent` would keep a stale global if propagation relied on change flags. With value comparison every root is checked every frame, so detaching, reparenting and direct writes to either transform all give the right result with no special helper. The price is a visit per entity per frame instead of per changed entity; the budget below accepts it for the MVP. The optimization (visit only changed subtrees: `Changed<Transform2d>` and `Changed<Parent>`, topmost-dirty-ancestor first) is additive and does not change a signature.
+   - **Descent:** pop `(entity, global)`, read its `Children`, and for each child look up `(&Transform2d, &Parent)`. **Skip the child unless its `Parent` is the entity being expanded** (one compare per node). Otherwise compute `global * local.to_affine()`, write it if it differs, and push the child if it has children. So a stale `Children` entry (a child listed by a former parent) is ignored, and a node can never be visited from two parents, which would write its global twice a frame and make `Changed<GlobalTransform2d>` fire every frame. A child with no `Transform2d` is skipped (not spatial). A child despawned since the parent's `Children` was updated is skipped (`get` returns `None`). A child with a dangling `Parent` (parent despawned without `despawn_recursive`) is unreachable and keeps its last global (the helpers of #49 prevent this). The scratch stack is a `Local<Vec<..>>` reused across frames. A debug build asserts the step count stays at or below the number of transformed entities (a `Children` cycle would loop forever; #49 rejects cycles).
+   - **Queries:** the write queries are `Without<Parent>` (roots) and `With<Parent>` (nodes, `&mut GlobalTransform2d`), so they are filter-disjoint and the system is accepted (#22, conflict rule 3). Read-only `Query<(&Transform2d, &Parent)>` and `Query<&Children>` supply the other reads.
+3. **Why compare values and not use `Changed<Transform2d>`.** The ECS cannot observe a component removal (#21). A child detached with `remove_child` (which removes `Parent` and edits `Children`) becomes a root, and the root pass recomputes it because its stored global no longer equals its local affine, with no change flag needed. Direct writes to either transform need none either. The price is a visit per entity per frame instead of per changed entity; the budget below accepts it for the MVP. The optimization (visit only changed subtrees: `Changed<Transform2d>` and `Changed<Parent>`, topmost-dirty-ancestor first) is additive and does not change a signature.
 4. **The `Changed<GlobalTransform2d>` contract.** Because a global is written only when its value changes, `Changed<GlobalTransform2d>` means "this entity moved in world space". Physics relies on this to re-place static colliders (#108, "Moved static things are re-placed here"). A test pins it.
 
 `propagate_transforms` runs in `PostUpdate`, after the systems that write `Transform2d` (`before_set(PROPAGATE)`) and before `Extract`, so the renderer and the next frame's physics `reconcile` read a consistent global (render D1, physics "Hierarchy and `GlobalTransform2d`").
 
 ### `CursorWorld`
 
-`CursorWorld { position: Option<Vec2> }` is a reflected resource defined in `exitium_app` (world space is app's) and **filled by facade glue**, because converting a cursor needs the camera and render has no edge to platform or app's input (C1). The glue runs in `First`, after `INPUT`, and uses the camera as of the previous frame's propagation, so it maps the cursor onto what is on screen. It is `None` when the cursor is outside the window or no camera contains it. Screen space (logical pixels, top-left origin, y down, which is render's `Screen` space) is `InputState::cursor_logical`.
+`CursorWorld { position: Option<Vec2> }` is a reflected resource defined in `exitium_app` (world space is app's) and **filled by facade glue**, because converting a cursor needs the camera and render has no edge to platform or app's input (C1). The glue runs in `First`, after `INPUT`, and uses the camera as of the previous frame's propagation, so it maps the cursor onto what is on screen. It passes `InputState::cursor_logical` (never the physical value) to render's `screen_to_world`, which takes logical pixels; a physical value would be wrong by the scale factor on a 1.5x display. It is `None` when the cursor is outside the window or no camera contains it. Screen space (logical pixels, top-left origin, y down, which is render's `Screen` space) is `InputState::cursor_logical`.
 
 ### Input (`exitium_platform`, Stage 1)
 
@@ -396,7 +396,7 @@ pub fn run(config: WindowConfig, handler: impl WindowHandler) -> Result<(), Plat
   7. **Default key handling.** `prevent_default: true` (so arrow keys do not scroll the page); `with_focusable(true)` so the canvas can receive keys. Set it to `false` for a page that wants the browser's shortcuts.
   8. **Panics** abort the page silently by default. `web::install_console_panic_hook()` (about 20 lines over `web_sys::console::error_1`) prints the message to the console. The plugin wraps it with `exitium_ecs::current_system()` so the failing system is named (#22, "Panic context"). The `console_error_panic_hook` crate is not used: the function is 20 lines and one crate fewer in the lock.
 - **Translation is pure and tested without a window.** winit's `KeyEvent` has a private field and cannot be built in a test, so `translate.rs` takes decomposed values: `translate_key(PhysicalKey, ElementState) -> Option<InputEvent>`, `translate_mouse_button`, `translate_scroll(MouseScrollDelta)`, `translate_cursor(PhysicalPosition<f64>)`. All of those are public winit types that a test can construct. A table test covers every `KeyCode` variant (winit code to ours and back by name).
-- **The editor's raw-event hook.** egui-winit (#110) needs the winit `WindowEvent`, and the game must not see a click the editor took. `WindowHandler::raw_event` is called first for keyboard, mouse and cursor events; if it returns true the translation is skipped. Resize, scale, focus and close are never consumed. This is the one public winit type in the crate, and it is deliberate; `egui-winit` 0.37 needs `winit ^0.30.13`, the same version.
+- **The editor's raw-event hook.** egui-winit (#110) needs the winit `WindowEvent`, and the game must not see a click the editor took. `WindowHandler::raw_event` is called first for keyboard, mouse and cursor events; if it returns true the translation is skipped. Resize, scale, focus and close are never consumed. The crate has exactly two public winit types, both deliberate and both for the editor: this hook (`&winit::event::WindowEvent`) and the escape hatch `PlatformWindow::as_winit` (`&winit::window::Window`, which egui-winit also needs). `egui-winit` 0.37 needs `winit ^0.30.13`, the same version.
 
 ### Stage 1 and Stage 2
 
@@ -405,10 +405,10 @@ pub fn run(config: WindowConfig, handler: impl WindowHandler) -> Result<(), Plat
 - **Stage 2, `exitium_app`:** the spine in the order A1 to A4 below.
 - **Stage 2, `exitium_platform::plugin` (feature `plugin`, default on, like physics):**
   - `PlatformPlugin { window: WindowConfig, exit_on_close: bool (true), install_panic_hook: bool (true) }`.
-  - **In `build`:** insert `InputState`, `InputSnapshot`, `WindowConfig`, `WindowInfo` (zero size) and register `PlatformEvent` as a reflected `Frame` event. Register all types with the reflection registry (Stage 1 types gain `cfg_attr(feature = "reflect", derive(Reflect))`; the `reflect` feature is added by intake 2). Install the panic hook. Set the runner.
-  - **Systems.** `First`, set `INPUT`: `apply_platform_events` reads `EventReader<PlatformEvent>`, applies input events to `InputState`, updates `WindowInfo` on `Resized` and `Focused` (with `release_all` on focus loss), and sends `AppExit` on `CloseRequested` when `exit_on_close`. `FixedFirst`: set the `Fixed` view. `FixedLast`: `end_tick`, set the `Frame` view. `Last`: `end_frame`, refresh `InputSnapshot`, and apply a changed `WindowConfig` (title, cursor visibility and fullscreen apply live; `size`, `resizable` and `canvas_id` apply only at creation).
+  - **In `build`:** insert `InputState`, `InputSnapshot`, `WindowConfig`, `WindowInfo` (zero size) and register two `Frame` events: `PlatformEvent` (sent only by the runner, **not reflected**, so MCP cannot send a resize or a close) and `InjectedInput(InputEvent)` (reflected, the injection event). Register all types with the reflection registry (Stage 1 types gain `cfg_attr(feature = "reflect", derive(Reflect))`; the `reflect` feature is added by intake 2). Install the panic hook. Set the runner.
+  - **Systems.** `First`, set `INPUT`: `apply_platform_events` reads `EventReader<PlatformEvent>` and `EventReader<InjectedInput>`, applies input events to `InputState`, updates `WindowInfo` on `Resized` and `Focused` (with `release_all` on focus loss), and sends `AppExit` on `CloseRequested` when `exit_on_close`. `FixedFirst`: set the `Fixed` view. `FixedLast`: `end_tick`, set the `Frame` view. `Last`: `end_frame`, refresh `InputSnapshot`, and apply a changed `WindowConfig` (title, cursor visibility and fullscreen apply live; `size`, `resizable` and `canvas_id` apply only at creation).
   - **The runner** implements `WindowHandler`: `ready` inserts `PrimaryWindow` and `WindowInfo` (so they exist before `PreStartup`); `event` does `world.send_event(PlatformEvent)`; `frame` calls `app.run_frame(seconds)` and returns `Flow::Exit` when the report holds an `AppExit`; `raw_event` forwards to an optional hook set with `PlatformPlugin::with_raw_event_hook`.
-  - **Input injection and winit input take one path:** both are `PlatformEvent`s sent between frames and consumed in `First`.
+  - **Input injection and winit input take one path into `InputState::apply`:** the runner sends `PlatformEvent::Input`, an agent sends `InjectedInput`, both between frames and both consumed in `First`. Injection is limited to `InputEvent` on purpose: a reflected `Resized`, `Focused` or `CloseRequested` would let an MCP call feed a huge size to the renderer or close the game. `InputState::apply` itself ignores a non-finite `CursorMoved` or `Scroll` and clamps one `Scroll` to 1,000 lines, so a hostile injected value cannot poison the state.
 
 ### Threading
 
@@ -421,9 +421,9 @@ pub fn run(config: WindowConfig, handler: impl WindowHandler) -> Result<(), Plat
 
 C1 forces these into `crates/exitium/` (a hotspot, one issue at a time). They are not edits to `exitium_app` or `exitium_platform`.
 
-1. **Window to render:** `PreStartup` copies `PrimaryWindow` into render's window resource, and `First` (after `INPUT`) copies `WindowInfo` into it each frame (render D2).
-2. **Cursor to world:** `First`, after `INPUT`: use render's camera resolve to fill `CursorWorld` from `InputState::cursor_physical` and the primary camera's view.
-3. **UI input and viewport:** a `First` system in set `UI_INPUT` converts `InputState` (frame view) into `UiInputFrame` (UI-logical pixels = `cursor_logical / ui_scale`), calls the UI plugin's input processing, and syncs `UiViewport` from `WindowInfo`. UI's draft puts the conversion in its plugin; C1 forbids the UI to read platform types, so the conversion is glue. The slot (`UI_INPUT` after `INPUT`, in `First`, before every tick) is this spec's.
+1. **Window to render:** `PreStartup` copies `PrimaryWindow` into render's window resource, and `First` (after `INPUT`) copies `WindowInfo` into it each frame (render D2). The systems take `Option<Res<PrimaryWindow>>` and `Option<Res<WindowInfo>>` and do nothing when they are `None`, so a headless app (no window, no renderer: the MCP end-to-end test) does not panic.
+2. **Cursor to world:** `First`, after `INPUT`: use render's camera resolve to fill `CursorWorld` from `InputState::cursor_logical` (logical pixels, as render's `screen_to_world` takes) and the primary camera's view. Like the window hand-off it reads `Option<Res<PrimaryWindow>>` and `Option<Res<..>>` of render's resources, so a headless app (no window, no renderer) skips it instead of panicking, and `DefaultPlugins` adds it only with `PlatformPlugin`.
+3. **UI input and viewport:** a `First` system, `after_set(INPUT)` and ordered before the UI plugin's `ui_input` system (which is in `UI_INPUT`), converts `InputState` (frame view) into the UI plugin's `UiInputFrame` **resource** (UI-logical pixels = `cursor_logical / ui_scale`) and syncs `UiViewport` from `WindowInfo`. `ui_input` only reads that resource and stores `UiCapture`; it names no platform type, because C1 forbids a UI to platform edge. `ui-mvp.md` is amended in this PR to say so (U11). With no platform plugin the resource keeps its default (no pointer, nothing pressed), so a headless or UI-only app works. The slot (`UI_INPUT` after `INPUT`, in `First`, before every tick) is this spec's.
 4. **`DefaultPlugins`** adds `PlatformPlugin` first among the engine's plugins, and re-exports the app and platform API through the facade.
 
 ## MCP / editor surface
@@ -453,10 +453,10 @@ Reflection is the source of truth (rule 2) and mutation is by command (rule 3). 
 
 | Event | Use |
 |---|---|
-| `PlatformEvent` | **Input injection.** An agent sends `Input(Key { key: Space, pressed: true })`, then the release, or `CursorMoved` and `MouseButton`. It takes the same path as real input (`First`, `INPUT`), so a game cannot tell the difference, and the edge rules above apply. Resize and focus events can be injected to test layout. |
+| `InjectedInput` | **Input injection.** An agent sends `InjectedInput(Key { key: Space, pressed: true })`, then the release, or `CursorMoved` and `MouseButton`. It reaches `InputState::apply` in `First`, `INPUT`, the same as real input, so a game cannot tell the difference, and the edge rules above apply. It carries an `InputEvent` only; window events (`Resized`, `Focused`, `CloseRequested`) are not injectable. |
 | `AppExit` | Graceful quit. |
 
-**Tool names for #110** (the `<domain>_<verb>` convention of the ECS spec). The generic tools already cover everything above (`ecs_get_resource`, `ecs_set_resource_field`, `ecs_send_event`). Two thin presets make agent use easy and need no new command: `app_pause` / `app_resume` / `app_step` (writes `TimeConfig.paused` and `step_ticks`), and `input_inject` (sends `PlatformEvent::Input`). Whether they are presets or just documentation is #110's call. A tool that "advances N frames and returns" in a **windowed** live game needs the boundary hook to wait on `Time::tick_count`; in a **headless** app `App::run_frames` does it directly.
+**Tool names for #110** (the `<domain>_<verb>` convention of the ECS spec). The generic tools already cover everything above (`ecs_get_resource`, `ecs_set_resource_field`, `ecs_send_event`). Two thin presets make agent use easy and need no new command: `app_pause` / `app_resume` / `app_step` (writes `TimeConfig.paused` and `step_ticks`), and `input_inject` (sends `InjectedInput`). Whether they are presets or just documentation is #110's call. A tool that "advances N frames and returns" in a **windowed** live game needs the boundary hook to wait on `Time::tick_count`; in a **headless** app `App::run_frames` does it directly.
 
 **Editor surface.** A time control (play, pause, step, speed) bound to `TimeConfig`; the transform gizmo writing `Transform2d`; an input and window panel from `InputSnapshot` and `WindowInfo`. The editor takes input before the game through `WindowHandler::raw_event` (above); #110 owns that wiring, and the platform provides the hook.
 
@@ -486,16 +486,16 @@ Min-spec is 4 cores and 8 GB (CLAUDE.md). Benchmarks live in `crates/exitium_app
 
 ## Test plan
 
-- **Time and loop (headless, `exitium_app`).** 60 Hz with frames of 6.9 ms (144 Hz) run 0, 1 or 2 ticks and `fixed_alpha` stays in `[0, 1)`; a 2 s frame is clamped by `max_frame_seconds` and by the tick cap, and `dropped_seconds` and `stalled_frames` report it; NaN and negative `frame_seconds` act as 0; `time_scale` 0.5 and 2.0; `paused` runs no ticks and zero `delta` while `Update` still runs; `step_ticks` runs exactly that many and resets; a hostile `TimeConfig` (zero, NaN, huge) is clamped, counted, and never panics; changing `fixed_hz` mid-run rebuilds the clock; `tick_count` inside a tick includes it.
+- **Time and loop (headless, `exitium_app`).** 60 Hz with frames of 6.9 ms (144 Hz) run 0 or 1 ticks (never 2: a frame is shorter than the 16.7 ms step) and, with frames of 33 ms (30 Hz), 1 or 2 ticks, and `fixed_alpha` stays in `[0, 1)` in both; a 2 s frame is clamped by `max_frame_seconds` and by the tick cap, and `dropped_seconds` and `stalled_frames` report it; NaN and negative `frame_seconds` act as 0; `time_scale` 0.5 and 2.0; `paused` runs no ticks and zero `delta` while `Update` still runs; `step_ticks` runs exactly that many and resets; a hostile `TimeConfig` (zero, NaN, huge) is clamped, counted, and never panics; changing `fixed_hz` mid-run rebuilds the clock; `tick_count` inside a tick includes it.
 - **Schedule order.** A recording test registers a system in every schedule and asserts the exact order for 0, 1 and 3 ticks, `Startup` once, `PreStartup` before `Startup`, and `UI_INPUT` after `INPUT` and before the first `FixedFirst`; `EXTRACT` before `RENDER`; a `PostUpdate` system `before_set(PROPAGATE)` is seen by the propagation of the same frame; `Commands` from `FixedUpdate` are applied before `FixedLast`.
 - **Events.** An event sent in `FixedUpdate` with the `Fixed` clock is read once by a `FixedUpdate` reader; a `Frame`-clock event sent in `Update` is read in the next `First` and in a `FixedUpdate` of the next frame when a tick runs; `AppExit` ends `run_frame` with the frame completed, including `Last`.
 - **Plugins.** Registration order; a duplicate unique plugin panics with its name; `is_unique == false` allows two; `PluginGroupBuilder::set`, `disable`; a plugin inserting resources in `build` is visible to a game `Startup` system.
 - **`App` API.** `build()` reports a cycle and an access conflict before any frame; `add_systems` with a function, a tuple and `chain`; `run_frames` returns the last report; the headless runner exits on `AppExit`; boundary hooks run first, in order, before `Startup` on the first frame and outside any schedule (a hook may call `world.run_schedule` on a label of its own without `AlreadyRunning`).
-- **Transforms.** Identity and composition (scale, rotation, translation order); shear from non-uniform parent scale; a three-level tree; reparent (overwrite `Parent`) and detach (remove `Parent`, no helper) both update; direct write to a child; a root with no `GlobalTransform2d` gets one in the same frame; a despawned child in `Children` is skipped; a dangling `Parent` keeps its last global; `Changed<GlobalTransform2d>` is false after a no-op `Transform2d` write and true after a real change; reflect round trip of both types, the pinned type names, a scene file omitting `scale`.
+- **Transforms.** Identity and composition (scale, rotation, translation order); shear from non-uniform parent scale; a three-level tree; reparent through the #49 helper and detach through `remove_child` both update, and a stale `Children` entry (a child listed by a former parent) is ignored and does not make `Changed<GlobalTransform2d>` fire every frame; direct write to a child; a root with no `GlobalTransform2d` gets one in the same frame; a grouping entity with `Children` and no `Transform2d` gets an identity transform, and its transformed children propagate through it; a despawned child in `Children` is skipped; a dangling `Parent` keeps its last global; `Changed<GlobalTransform2d>` is false after a no-op `Transform2d` write and true after a real change; reflect round trip of both types, the pinned type names, and a `DynamicStruct` with `scale` missing rebuilt through `FromReflect` gets `Vec2::ONE` (scene loading itself is #111's).
 - **Input (Stage 1, no window).** Press, release, repeat press ignored; edge rules in both views (a press on a frame with no tick is visible to the next tick once; a press and release inside one interval gives both edges and `pressed` false; two ticks in a frame give the edge to the first only); `end_frame` and `end_tick` clear only their own set; `release_all` emits edges; cursor physical to logical with scale 1.0, 1.5 and 2.0; scroll accumulation and the pixel-to-line constant; `unmapped` counts an unknown key; a property test applies random event sequences and checks that `pressed` equals the last event per button.
 - **Translation.** Every `KeyCode` against winit's by name; mouse buttons; both `MouseScrollDelta` forms; fractional physical positions.
 - **Window and loop (manual, recorded in each PR).** The example on Windows (125% and 100% scale, drag a window across monitors if available, resize, minimize, restore, alt-tab with a key held) and in Chrome (canvas by id, created canvas, browser zoom, window resize, hidden tab and return, the panic hook on a forced panic). A `compile`-only assertion that `PlatformWindow` is `Send + Sync`, built for wasm32.
-- **Plugin (Stage 2, headless where possible).** Injected `PlatformEvent`s drive `InputState` through `First`; `Focused(false)` releases keys; `CloseRequested` sends `AppExit` when `exit_on_close`; a changed `WindowConfig` is applied only for the live fields; the runner's `WindowHandler` is tested with a fake window (the handler logic is separate from the winit loop).
+- **Plugin (Stage 2, headless where possible).** Injected `InjectedInput` events drive `InputState` through `First` (a non-finite cursor and an oversized scroll are ignored or clamped, and a `Resized` cannot be sent through reflection); `Focused(false)` releases keys; `CloseRequested` sends `AppExit` when `exit_on_close`; a changed `WindowConfig` is applied only for the live fields; the runner's `WindowHandler` is tested with a fake window (the handler logic is separate from the winit loop).
 - **wasm32.** `cargo build --target wasm32-unknown-unknown` for both crates (and `--examples` for the platform, proposed in the wiring). Neither crate is in `NATIVE_ONLY`.
 - **Benchmarks.** Every row of the Performance table, each against a hand-written baseline (a bare loop over the same data).
 
@@ -504,7 +504,7 @@ Min-spec is 4 cores and 8 GB (CLAUDE.md). Benchmarks live in `crates/exitium_app
 1. **`Time` duplicates the core `Time`.** Core is frozen, cannot derive `Resource` or `Reflect`, and has no alpha. The app's `Time` has the same four fields plus three. When core may change (a later chore), core's `Time` can gain `fixed_alpha` and the app's resource can wrap it. Until then there are two types of the same name in different crates; the facade exports only the app's.
 2. **Full propagation versus changed-only.** This spec visits every root and hierarchy node each frame (value compare) so that detaching a child is always correct without a hook. If a game has tens of thousands of parented entities, the optimization is the changed-only pass with a `Changed<Parent>` check and a removal-aware helper in #49. Confirm the budgets are acceptable for the MVP.
 3. **Skipping derived components on save.** This spec marks `GlobalTransform2d` with `custom(derived = true)` and expects the scene spec (#111) to skip such components. If #111 chooses another rule (a list, or not registering `ReflectComponent`), only the attribute on `GlobalTransform2d` changes. `custom` on a type must be allowed by the reflect derive (reflect-model lists `custom` among the attributes, without saying where); if not, #111 owns the marker.
-4. **The raw-event hook exposes `winit::event::WindowEvent`.** It is the one winit type in the public API, for the editor's egui-winit. If #110 can route egui from the translated `PlatformEvent`s instead, the hook goes away. egui-winit needs the winit event, so this is expected to stay.
+4. **Two winit types are public.** `WindowHandler::raw_event` exposes `winit::event::WindowEvent` and `PlatformWindow::as_winit` exposes `winit::window::Window`, both for the editor's egui-winit. If #110 can route egui from the translated `PlatformEvent`s and needs no window reference, both go away. egui-winit needs the winit event and window, so they are expected to stay.
 5. **Windows modal resize loop.** Frames stall while the title bar is held. A fix needs a timer-driven redraw during the modal loop (winit has no portable hook for it). Accepted for the MVP: the game stays correct, because the next frame's `Time::delta` is clamped.
 6. **Interpolation of non-physics movers** (render open question 3). Not in the MVP. The additive path is an opt-in `PreviousTransform2d` (saved in `FixedFirst`) and a `PostUpdate` blend into `GlobalTransform2d` by `Time::fixed_alpha`. It touches no signature in this spec.
 7. **`Plugins` for tuples and groups** is a small marker-trait trick (as `IntoSystem`). If a basic-level reviewer finds it too clever, the alternative is `add_plugin` and `add_plugin_group` as two methods. Same behavior.
@@ -522,30 +522,29 @@ After this spec merges the architect files these into the Jam MVP milestone with
 
 **Stage 1: `exitium_platform` (depends on `exitium_core`, `winit` and `web-time`).**
 
-**PL1. `feat(platform): KeyCode, MouseButton and ButtonInput`** (about 500 lines)
+**PL1. `feat(platform): KeyCode, MouseButton and ButtonInput`** (about 450 lines)
 - Footprint:
   - Edits: `crates/exitium_platform/`
   - Governs: none
   - Hotspots: none
   - New crate edges: none
-- `input/key.rs`, `input/button.rs`, `benches/input.rs` (button rows; the `[[bench]]` stanza is added here and does not change `Cargo.lock`), and the crate `CLAUDE.md` (module map, the no-winit-in-public-API rule, the one-path-for-input rule).
+- `input/key.rs`, `input/button.rs`, and the crate `CLAUDE.md` (module map, the two-public-winit-types rule, the one-path-for-input rule). The benchmark is in PL2, to keep this issue under the size limit.
 - Acceptance:
   - [ ] `KeyCode` has the variants listed, with `name()` and `from_name()` on the W3C strings and a dense index; every variant round-trips by name; `K::COUNT <= 256` is asserted at compile time.
   - [ ] `ButtonInput` implements the two edge sets and the `EdgeView` rules exactly as specified, including repeat ignore, `release_all` and the per-view clears; the table and property tests of the Test plan.
-  - [ ] The benchmark covers `pressed`, `just_pressed`, `press` and the clears, within the budgets.
 - Blocked by: intake-1.
 
-**PL2. `feat(platform): InputEvent, PlatformEvent and InputState`** (about 450 lines)
+**PL2. `feat(platform): InputEvent, InjectedInput, InputState and input benchmarks`** (about 550 lines)
 - Footprint:
   - Edits: `crates/exitium_platform/`
   - Governs: none
   - Hotspots: none
   - New crate edges: none
-- `input/event.rs`, `input/state.rs`: `apply`, cursor physical and logical, scroll, `cursor_delta`, `unmapped`, `snapshot` into a reused `InputSnapshot`, the scale factor.
+- `input/event.rs`, `input/state.rs`, `benches/input.rs` (the `[[bench]]` stanza is added here and does not change `Cargo.lock`): `InputEvent`, `PlatformEvent`, `InjectedInput`, `apply` (ignoring non-finite cursor and scroll values and clamping one scroll to 1,000 lines), cursor physical and logical, scroll, `cursor_delta`, `unmapped`, `snapshot` into a reused `InputSnapshot`, the scale factor.
 - Acceptance:
   - [ ] Every `InputEvent` variant applies as specified; the cursor converts for scales 1.0, 1.5 and 2.0; `Scroll` accumulates and `end_frame` clears it.
-  - [ ] The property test (random sequences, `pressed` equals the last event per button) passes.
-  - [ ] `apply` and `snapshot` are allocation-free after warm-up (reviewed) and within the budgets in the benchmark.
+  - [ ] The property test (random sequences, `pressed` equals the last event per button) passes; NaN and infinite cursor and scroll values leave the state unchanged, and an oversized scroll is clamped.
+  - [ ] The benchmark covers `pressed`, `just_pressed`, `press`, the clears, `apply` and `snapshot`, within the budgets; `apply` and `snapshot` are allocation-free after warm-up (reviewed).
 - Blocked by: intake-1, PL1.
 
 **PL3. `feat(platform): window config, info, PlatformWindow and winit translation`** (about 500 lines)
@@ -613,7 +612,7 @@ After this spec merges the architect files these into the Jam MVP milestone with
 - `time.rs`, `frame.rs`, `cursor.rs`: `Time`, `TimeConfig`, `FrameStats`, `AppExit`, `CursorWorld`, `run_frame`, `FrameReport`, boundary hooks, `update`, the headless runner.
 - Acceptance:
   - [ ] The frame order of the spec holds for 0, 1 and 3 ticks (the recording test); `Startup` runs once; `tick_count` inside a tick includes it.
-  - [ ] Every time test of the Test plan passes: the 144 Hz tick pattern, both clamps, scale, pause, step, config clamping and counting, clock rebuild on `fixed_hz` change.
+  - [ ] Every time test of the Test plan passes: the 0-or-1 tick pattern at 144 Hz and the 1-or-2 pattern at 30 Hz, both clamps, scale, pause, step, config clamping and counting, clock rebuild on `fixed_hz` change.
   - [ ] Both event clocks update at the specified points; `AppExit` completes the frame.
   - [ ] Boundary hooks run first, outside any schedule.
   - [ ] All new resources and `AppExit` are reflected with the pinned type names and ranges.
@@ -625,10 +624,10 @@ After this spec merges the architect files these into the Jam MVP milestone with
   - Governs: none
   - Hotspots: none
   - New crate edges: none
-- `transform/mod.rs`, `transform/propagate.rs`: the two components, `ensure_global_transforms`, `propagate_transforms` with the disjoint write queries and the reused scratch stack, registration in `App::new`.
+- `transform/mod.rs`, `transform/propagate.rs`: the two components, `ensure_global_transforms` (both queries), `propagate_transforms` with the disjoint write queries, the `Parent` check in the descent and the reused scratch stack, registration in `App::new`.
 - Acceptance:
-  - [ ] Every transform test of the Test plan passes, including detach by removing `Parent`, reparent, shear, the dangling `Parent`, and the `Changed<GlobalTransform2d>` contract.
-  - [ ] Both types are reflected, the type names are pinned, and a scene text file omitting `scale` loads with `Vec2::ONE`.
+  - [ ] Every transform test of the Test plan passes, including detach through `remove_child`, reparent through the #49 helper, a stale `Children` entry ignored, a transform-less grouping parent, shear, the dangling `Parent`, and the `Changed<GlobalTransform2d>` contract.
+  - [ ] Both types are reflected, the type names are pinned, and a `DynamicStruct` with `scale` missing rebuilt through `FromReflect` gets `Vec2::ONE` (no scene file and no `exitium_serial` dependency; scene loading is #111's).
   - [ ] The system is accepted by the scheduler's conflict check (the filter-disjoint queries), and its `SystemAccess` is asserted by a test.
 - Blocked by: intake-2, A2, #49 (hierarchy), #50 (the reflect hook for components).
 
@@ -652,9 +651,9 @@ After this spec merges the architect files these into the Jam MVP milestone with
   - Governs: none
   - Hotspots: none
   - New crate edges: none
-- `plugin/mod.rs`, `plugin/systems.rs`; `cfg_attr(feature = "reflect", derive(Reflect))` with pinned type names on `KeyCode`, `MouseButton`, `InputEvent`, `PlatformEvent`, `WindowConfig`, `WindowInfo`, `InputSnapshot`; `PlatformPlugin`, the resources, the reflected event registration, `apply_platform_events`, the view switch, `end_tick`, `end_frame`, `InputSnapshot` refresh.
+- `plugin/mod.rs`, `plugin/systems.rs`; `cfg_attr(feature = "reflect", derive(Reflect))` with pinned type names on `KeyCode`, `MouseButton`, `InputEvent`, `InjectedInput`, `WindowConfig`, `WindowInfo`, `InputSnapshot` (`PlatformEvent` is not reflected); `PlatformPlugin`, the resources, the reflected event registration, `apply_platform_events`, the view switch, `end_tick`, `end_frame`, `InputSnapshot` refresh.
 - Acceptance:
-  - [ ] Injected `PlatformEvent`s drive `InputState` through `First` in a headless app; the edge rules hold in a `FixedUpdate` system on a frame with no tick and on a frame with two ticks.
+  - [ ] Injected `InjectedInput` events drive `InputState` through `First` in a headless app; a non-finite cursor and an oversized scroll are ignored or clamped; `PlatformEvent` has no reflection registration; the edge rules hold in a `FixedUpdate` system on a frame with no tick and on a frame with two ticks.
   - [ ] `Focused(false)` releases keys; `CloseRequested` sends `AppExit` only when `exit_on_close`.
   - [ ] Every type in the surface list reflects and round-trips; the injected event schema is readable by a generic tool.
   - [ ] `INPUT` is a set the UI glue can order after (a test orders a system `after_set(INPUT)`).
@@ -686,7 +685,8 @@ After this spec merges the architect files these into the Jam MVP milestone with
 - The `PreStartup` and `First` systems that fill render's window resource from `PrimaryWindow` and `WindowInfo`, and the `First` system that fills `CursorWorld` from the cursor and the primary camera.
 - Acceptance:
   - [ ] A window opens, the renderer takes the surface, and a resize reaches the renderer within one frame.
-  - [ ] `CursorWorld` is correct for a camera with zoom, offset and rotation, and for scale factors 1.0 and 1.5; it is `None` outside the window.
+  - [ ] `CursorWorld` is correct for a camera with zoom, offset and rotation, and for scale factors 1.0 and 1.5 (it is built from `cursor_logical`); it is `None` outside the window.
+  - [ ] A headless app (no `PrimaryWindow`, no renderer) runs a frame with the glue installed and does not panic; the glue systems read `Option<Res<..>>`.
   - [ ] Nothing in the glue is wasm-gated except what the render and platform APIs already gate.
 - Blocked by: intake-2, PP2, A2, the render plugin issue that adds the window resource and the camera resolve (#107's issues).
 
@@ -696,10 +696,11 @@ After this spec merges the architect files these into the Jam MVP milestone with
   - Governs: none
   - Hotspots: `crates/exitium/` (the facade)
   - New crate edges: none
-- The `UI_INPUT` system that turns `InputState` (frame view) into `UiInputFrame`, runs the UI's input processing before any tick, and syncs `UiViewport` from `WindowInfo`.
+- The `First` system (`after_set(INPUT)`, before the UI plugin's `ui_input`) that turns `InputState` (frame view) into the UI plugin's `UiInputFrame` resource, and syncs `UiViewport` from `WindowInfo`. The UI's own `ui_input` (set `UI_INPUT`) then processes it before any tick.
 - Acceptance:
-  - [ ] A button click through injected `PlatformEvent`s is seen by a game `Update` system and by a `FixedUpdate` system in the same frame (this resolves the UI spec's "previous-frame capture" case).
+  - [ ] A button click through injected `InjectedInput` events is seen by a game `Update` system and by a `FixedUpdate` system in the same frame (this resolves the UI spec's "previous-frame capture" case).
   - [ ] `UiCapture.pointer` is true on the press, the held and the release frames of a UI press, and false for a gameplay press.
+  - [ ] With no platform plugin the `UiInputFrame` resource keeps its default and no UI event fires; the glue reads `Option<Res<InputState>>`.
 - Blocked by: intake-2, F1, PP2, the UI plugin issue U11 (#109's issues).
 
 **F3. `feat(exitium): app and platform re-exports and DefaultPlugins entry`** (about 150 lines)
@@ -719,6 +720,7 @@ After this spec merges the architect files these into the Jam MVP milestone with
 
 - **#49 (hierarchy):** its Context says transform propagation is "scene crate, Phase 2". It is `exitium_app` (A3). Add the ECS-side needs: `Children` exposes its slice and `Parent` its entity, and `despawn_recursive` and the helpers keep `Children` consistent, since propagation trusts them.
 - **#22 items 11 and 13 (the ECS scheduler):** `ScheduleLabel::new` and `SystemSet::new` are `const fn`; `register_reflected_event::<E>` takes the clock. Both are one line in the issue bodies.
+- **UI (#109), U11:** `ui_input` takes a UI-owned `UiInputFrame` resource and stores `UiCapture`, and names no platform type (`exitium_ui` has no edge to `exitium_platform`, C1). F2 fills the resource from `InputState`. U11's headless tests write a `UiInputFrame` into the resource. `ui-mvp.md` is amended in this PR to match (the Stage 2 text, open questions 3 to 5 and U11).
 - **Physics (#108) and UI (#109) issues:** their plugin issues are `Blocked by` A1 and A2 and use the `FixedFirst`, `FixedLast`, `PostUpdate` (before `PROPAGATE`) and `UI_INPUT` slots; resources are inserted in `build`.
 - **Render (#107) issues:** `Extract` with the `EXTRACT` and `RENDER` sets, `Startup` for renderer init, `PreStartup` for the facade's window hand-off; no interpolation in v1.
 
@@ -772,7 +774,7 @@ Each open dependency that another merged or open spec names on this one, and whe
 | Physics | `Transform2d` and `GlobalTransform2d` shape | Translation `Vec2`, rotation radians, scale `Vec2`; the global is an `Affine2`, written only when it changes. |
 | Physics | Open question 1 (units and the y axis) | y up, counter-clockwise radians; units belong to the game, the camera and `units_per_meter`. |
 | Physics | Open question 3 (event channel) | ECS events with the `Fixed` clock serve per-tick delivery; the driver updates both clocks. |
-| UI (#109) | `ui_input` after platform input and before `FixedUpdate` | Sets `INPUT` then `UI_INPUT` in `First`, which runs before every tick. The conversion is facade glue (F2), because C1 forbids a UI to platform edge. |
+| UI (#109) | `ui_input` after platform input and before `FixedUpdate` | Sets `INPUT` then `UI_INPUT` in `First`, which runs before every tick. The conversion is facade glue (F2) that fills a UI-owned `UiInputFrame` resource, because C1 forbids a UI to platform edge; `ui-mvp.md` is amended to match. |
 | UI | Open question 3 (platform input shape) | `InputState` in the `Frame` view: `cursor_logical`, `mouse`, `keys`, `scroll_lines`. |
 | UI | Open question 4 (consumption) | The platform never masks. `UiCapture` is the contract. |
 | UI | Open question 5 (ordering, extraction glue position) | `UI_INPUT` in `First`; facade glue in `Extract`, set `EXTRACT`. |

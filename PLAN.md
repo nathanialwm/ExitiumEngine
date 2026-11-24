@@ -7,11 +7,23 @@ Companion to `INTERVIEW.md`, which holds the answers and risks this plan is buil
 Build order:
 
 1. **Stand up the AI software factory first.** This means the repo, CI, agent roster, gates and the graph.
-2. **Have the factory build the engine in dependency order**, prioritizing what **Glutton** needs: foundations → runtime → UI → editor/MCP → incremental sim and saves → platform and backend.
-3. **Ship the Glutton Steam demo and itch.io build together.**
-4. **Broaden the engine:** pixel art, camera modes, tilemaps, physics, multiplayer scale-out, destruction groundwork.
+2. **Have the factory build the full MVP engine**, in the stages of `docs/specs/mvp-roadmap.md`: specs and the Luau-on-wasm spike → foundations → runtime → editor, MCP, Luau and export → 2D breadth → sim and saves → platform and online.
+3. **Prove it on six rehearsal games** in the repo root `examples/` (top-down, sidescroller, isometric, pixel art, incremental, netplay). Each is exported to a Windows exe and to the web. That is the full MVP.
+4. **After the MVP:** build a real game in a new folder, and take on the items still out of scope (see "Out of the MVP" below).
 
 Phase 0 is done by hand: me, in this session or the next few, with the owner. From Phase 1 onward, the Architect agent turns each phase into epics and issues on the GitHub Project, and the factory executes them.
+
+**Plan of record.** `docs/specs/mvp-roadmap.md` (owner-approved 2026-11-24, supersedes `docs/specs/jam-mvp.md`) holds the stages, lanes, exit criteria and cross-spec rules. This file keeps the long-term architecture and the phase checklists, and does not repeat the roadmap. Where the two disagree, the roadmap wins. The owner decisions it records:
+
+- **Luau is in.** `exitium_script` runs on mlua, after a wasm spike. If the spike fails, scripts are native-only and web builds run without Luau. Rust gameplay must be enough to play every web-exported example.
+- **Web is WebGPU-only and single-threaded.** No WebGL2 fallback. Web threads are out (they need nightly Rust).
+- **The editor, MCP and CLI are Windows-only** for the MVP. Testing covers Windows and Chrome.
+- **2D breadth is in, but not optimized:** tilemaps, the pixel-art pipeline, normal-mapped lighting, and top-down, sidescroller and isometric camera modes.
+- **Sim, saves, Steam, net, server and backend are in.**
+- **Glutton is no longer the driver.** The six `examples/` games are.
+- **The Steam and itch release workflows are in.** The owner pushes the `.github/workflows/` files, because the factory App cannot.
+
+**Out of the MVP:** web threads, a WebGL2 fallback, the editor, MCP and CLI on Linux and macOS, Firefox and Safari, network scale-out (Phase 9), destruction (epic #11) and the Glutton repo (epic #9).
 
 ---
 
@@ -35,11 +47,11 @@ Phase 0 is done by hand: me, in this session or the next few, with the owner. Fr
 | | `exitium_render` | wgpu renderer: sprite batching, high-res image path (portraits), text (cosmic-text/glyphon), render graph, camera modes, later the pixel pipeline and 2D lighting |
 | | `exitium_ui` | Retained widget tree, flex layout (taffy), themes/styles, data binding, UI markup files, animation/tweening; immediate-mode layer for debug and tools |
 | | `exitium_audio` | kira-based audio, buses, streaming |
-| | `exitium_script` | Luau via mlua. Layered API (safe tier vs. privileged tier, for future modding), hot reload |
+| | `exitium_script` | Luau via mlua. Layered API (safe tier vs. privileged tier, for future modding), hot reload. Builds for wasm either with the VM or as a no-op stub, depending on the spike |
 | Game systems | `exitium_sim` | Incremental sim toolkit: fixed high-rate ticks, offline progress (analytic + fast-forward), prestige/reset layers, automation and scheduling |
 | | `exitium_save` | Versioned saves, migration chains, compression, authenticated encryption, cloud provider trait |
-| | `exitium_physics` | rapier2d integration (later phase) |
-| | `exitium_tilemap` | Tilemaps for top-down, sidescroller and isometric (depth sort, height levels) — later phase |
+| | `exitium_physics` | rapier2d integration |
+| | `exitium_tilemap` | Tilemaps for top-down, sidescroller and isometric (depth sort, height levels) |
 | | `exitium_destruct` | Groundwork: chunked grids, cell-sim interface, GPU compute hooks, dirty regions, collider regeneration interface — later phase |
 | Online | `exitium_net` | Transport, authoritative replication, client prediction, compact wire format |
 | | `exitium_server` | Headless server runtime, stateless and horizontally scalable |
@@ -47,8 +59,9 @@ Phase 0 is done by hand: me, in this session or the next few, with the owner. Fr
 | | `exitium_steam` | Steamworks: achievements, cloud, overlay, demo/app IDs |
 | Tooling | `exitium_editor` | Standalone egui editor: hierarchy, inspector, asset browser, UI editor, data asset editor, play-in-editor, profiler panel |
 | | `exitium_mcp` | MCP server (rmcp): docs/API query, live editor/game control, screenshots, builds/tests/benchmarks |
-| | `exitium_cli` | `exitium new/build/run/pack/bench` |
+| | `exitium_cli` | `exitium new/build/run/pack/bench/export` |
 | | `exitium` | Facade crate that games depend on |
+| Games | `examples/*` | Six rehearsal games in the repo root, each depending only on `exitium` |
 | | `xtask` | Repo automation: CI entry points, push wrapper, bench compare, schema export |
 
 ### Cross-cutting rules
@@ -129,6 +142,8 @@ The check fails unless the owner has applied `human-approved` when a PR touches 
 
 ## Step-by-step plan
 
+Phases 1 to 9 are the epics #3 to #11 and stay as the long-term checklists. `docs/specs/mvp-roadmap.md` says which stage takes which items: Phase 1 is Stage 1; Phase 2 is Stages 2 and 3 (the Luau-on-wasm spike is Stage 0); Phase 3 is Stages 1 and 5; Phase 4 is Stages 3 and 5; Phase 5 is Stage 5; Phase 6 is Stage 6 (web export is Stage 3); Phase 7 is replaced by Stage 7 (the `examples/` games); Phase 8 is Stage 4; Phase 9 is out of the MVP.
+
 ### Phase 0 — Repository and factory bootstrap (manual, with owner)
 
 1. ~~Resolve R1–R3~~. Decided 2026-11-16 (INTERVIEW.md §4): native Windows runner + Linux Docker runners; macOS only on path-matched PRs; GitHub App `exitium-factory` for agent identity.
@@ -174,11 +189,11 @@ The check fails unless the owner has applied `human-approved` when a PR touches 
 5. `exitium_data`: Data Assets with prototype/variant inheritance and inspector-ready reflection.
 6. `exitium_scene`: scenes, prefabs, prefab variants.
 7. `exitium_audio`: kira integration.
-8. `exitium_script`: Luau via mlua, the layered API, hot reload, and the WASM spike (R5).
+8. `exitium_script`: Luau via mlua, the layered API, hot reload, and the WASM spike (R5). The spike runs first. If it fails, scripts are native-only and the crate builds for wasm as a no-op stub.
 
-**Exit:** a windowed and web sample renders portraits and text, loads data assets and scenes, plays audio, runs Luau, and hot-reloads assets.
+**Exit:** a windowed and web sample renders portraits and text, loads data assets and scenes, plays audio, runs Luau (on the web only if the spike passed), and hot-reloads assets.
 
-### Phase 3 — Game UI (Glutton critical path)
+### Phase 3 — Game UI
 
 1. Retained widget tree on top of the ECS or a dedicated arena (decided by ADR), with taffy flex layout.
 2. Core widgets: panel, label, rich text, image, button, toggle, slider, progress bar, scroll view, list/virtualized list, grid, tooltip, modal, tabs, number display (bound to `Num`).
@@ -188,7 +203,7 @@ The check fails unless the owner has applied `human-approved` when a PR touches 
 6. Immediate-mode layer for debug overlays and quick tools.
 7. UI perf benchmarks: layout of 10k nodes, rebinding counters at high tick rates.
 
-**Exit:** a Glutton-style UI mockup with heavy live numbers runs at full frame rate on min-spec settings.
+**Exit:** a UI mockup with heavy live numbers runs at full frame rate on min-spec settings.
 
 ### Phase 4 — Editor and MCP
 
@@ -217,22 +232,30 @@ The check fails unless the owner has applied `human-approved` when a PR touches 
 
 ### Phase 6 — Platform, online and backend
 
-1. Web build pipeline (wasm-bindgen, threads when cross-origin isolated, wgpu's WebGPU backend only for the Jam MVP; a WebGL2 fallback is deferred, not dropped, see `docs/specs/jam-mvp.md` and `docs/specs/render-v1.md`) and itch.io packaging.
+1. Web build pipeline (wasm-bindgen, single-threaded, wgpu's WebGPU backend only; web threads and a WebGL2 fallback are out of the MVP, see `docs/specs/mvp-roadmap.md` and `docs/specs/render-v1.md`) and itch.io packaging.
 2. `exitium_steam`: Steamworks init, achievements, Steam cloud as a save provider, overlay, demo app.
 3. `exitium_net` v1: transport, authoritative client/server, replication of components marked via reflection.
 4. `exitium_server`: headless runtime built for stateless, horizontal scaling.
 5. `exitium_backend`: auth, cloud saves, leaderboards, server-side offline-gain validation (reusing `exitium_sim`), external hosting/orchestration adapters, load tests.
-6. Release workflow: Steam depot upload and itch butler push.
+6. Release workflows: Steam depot upload and itch butler push. The CLI crate holds the drafts, and the owner pushes the `.github/workflows/` files.
 
-**Exit:** a sample game syncs saves to the backend, posts to leaderboards, has offline gains validated by the server, and ships to both Steam (private branch) and itch.
+**Exit:** a sample game syncs saves to the backend, posts to leaderboards, has offline gains validated by the server, and plays networked. The Steam path works by hand with Valve's test app, and the CLI produces the Steam depot layout and the itch zip.
 
-### Phase 7 — Glutton (separate repo)
+### Phase 7 — Rehearsal games (repo root `examples/`)
 
-1. Create the `Glutton` repo depending on the `exitium` facade, with its own factory config inherited from the engine's templates.
-2. Build the vertical slice → demo content. Engine gaps found here become issues on the engine board.
-3. Release the Steam demo and itch build together.
+Replaces the Glutton phase. Glutton is no longer the driver, and the Glutton repo (epic #9) is out of the MVP.
+
+1. Six games, each depending only on the `exitium` facade: `topdown`, `sidescroller`, `isometric`, `pixel_art`, `incremental` and `netplay`.
+2. Each is built by an agent through MCP, Rust and Luau, refined by a human in the editor, and exported to a Windows exe and to the web. Rust gameplay must be enough to play the web build.
+3. Engine gaps found here become issues on the engine board.
+
+**Exit = the full MVP:** all six games run as a Windows exe and as a web build in Chrome, and the online path works from both.
+
+After the MVP is tested, a real game is built in a new folder.
 
 ### Phase 8 — Engine breadth
+
+In the MVP as Stage 4, built correct and tested but not yet optimized.
 
 1. Pixel art pipeline: virtual resolution with integer scaling, sub-pixel camera, palette swap/indexed color, pixel-perfect rotation, Aseprite import (tags, slices, animations).
 2. Normal-mapped 2D lighting.
@@ -242,6 +265,8 @@ The check fails unless the owner has applied `human-approved` when a PR touches 
 
 ### Phase 9 — Scale and destruction groundwork
 
+Out of the MVP.
+
 1. Network scale-out: interest management, sharding hooks, gateway/edge design, load testing toward large concurrency targets.
 2. `exitium_destruct` groundwork: chunked cell grids, GPU compute sim interface, dirty-region rendering, collider regeneration from cell and polygon changes, a fracture interface.
 3. Full destruction engine spec (an ADR with the owner), then implementation as its own roadmap.
@@ -250,6 +275,8 @@ The check fails unless the owner has applied `human-approved` when a PR touches 
 
 ## Immediate next steps
 
-1. The owner decides R1, R2 and R3 (INTERVIEW.md §4).
-2. Run Phase 0 steps 2–4: toolchain, git, the GitHub repo and the workspace skeleton.
-3. Continue Phase 0 through the dry run, then hand the roadmap to the factory.
+Phase 0 is done and the factory is running. The next steps are in `docs/specs/mvp-roadmap.md` ("Stage 0" and "Implementation issues"):
+
+1. File the Stage 0 spec and ADR issues, and start the Luau-on-wasm spike first, because it runs for days.
+2. Merge the specs that block intake 1, then run intake 1 and the Stage 1 lanes.
+3. Merge the remaining specs before the intake that needs them (intakes 2 and 3).

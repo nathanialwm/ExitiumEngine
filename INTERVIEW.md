@@ -14,7 +14,9 @@ This document records the answers given during the interview and my understandin
 
 The repository runs as an **AI software factory**. Claude agents with defined roles take approved GitHub Issues, implement them in parallel worktrees, open PRs, review them, and auto-merge when every gate passes. The owner intervenes only when a PR fails two AI review rounds (ADR-0005).
 
-The first consumer is **Glutton**, an incremental roguelite in a separate repository. It is UI-heavy and uses static (non-animated) hand-drawn portraits. It has **no pixel art**. It needs cloud saves, leaderboards and server-side offline gains, and it releases a Steam demo and an itch.io build at the same time.
+The first consumer was planned as **Glutton**, an incremental roguelite in a separate repository. It is UI-heavy and uses static (non-animated) hand-drawn portraits. It has **no pixel art**. It needs cloud saves, leaderboards and server-side offline gains, and it releases a Steam demo and an itch.io build at the same time.
+
+*Updated 2026-11-24: Glutton is no longer the driver. The full MVP (`docs/specs/mvp-roadmap.md`) is proven by six rehearsal games in the repo root `examples/`. A real game is built in a new folder after the MVP is tested.*
 
 Later consumers:
 - High-performance multiplayer games. The long-term target is an architecture that can scale toward 100M concurrent players.
@@ -26,9 +28,9 @@ Later consumers:
 
 | # | Topic | Answer | Implication |
 |---|---|---|---|
-| 1 | First milestone | Ship a full incremental roguelite (Glutton): heavy UI, static hand-drawn portraits | The **UI system** and the **incremental sim/save stack** are the critical path. Pixel art, isometric, physics and destruction are not on Glutton's path. |
+| 1 | First milestone | Ship a full incremental roguelite (Glutton): heavy UI, static hand-drawn portraits | The **UI system** and the **incremental sim/save stack** are the critical path. Pixel art, isometric, physics and destruction are not on Glutton's path. Superseded 2026-11-24 (`docs/specs/mvp-roadmap.md`): Glutton no longer drives priority, and 2D breadth and physics are in the MVP (destruction is not). |
 | 2 | Editor | Standalone editor app | Separate `exitium_editor` binary. Shipped games contain no editor code. |
-| 3 | Platforms | Windows, Linux, macOS, Web now; mobile later | Use wgpu. The Jam MVP web build uses wgpu's WebGPU backend only; a WebGL2 fallback is deferred, not dropped (`docs/specs/jam-mvp.md`, `docs/specs/render-v1.md`). Keep platform code behind traits so mobile can be added later. |
+| 3 | Platforms | Windows, Linux, macOS, Web now; mobile later | Use wgpu. The web build uses wgpu's WebGPU backend only; a WebGL2 fallback is out of the MVP, not dropped (`docs/specs/mvp-roadmap.md`, `docs/specs/render-v1.md`). In the MVP the editor, MCP and CLI are Windows-only, and testing covers Windows and Chrome. Linux and macOS for those tools come after the MVP. Keep platform code behind traits so mobile can be added later. |
 | 4 | Audience | Owner only for now; make it extensible toward a public release | No doc-maintenance burden now, but keep public API boundaries clean and use a permissive-ready license structure. |
 | 5 | Rust experience / feel | Basic Rust. Take the best ideas from Godot, Unity, Unreal and Bevy, with its own identity | The code must stay readable and well commented at module boundaries. Agents do most of the writing, and the owner needs to be able to review it. |
 | 6 | ECS | Custom archetype ECS (recommended) | Build `exitium_ecs`: SoA archetype storage, parallel system scheduling, change detection, built-in reflection hooks. |
@@ -44,10 +46,10 @@ Later consumers:
 | 16 | Hot reload | All: assets, data objects, shaders, game code | Rust game-code hot reload goes through a dynamic library or Lua. See risk R6. |
 | 17 | Saves | All: versioning/migration, compression, encryption/tamper resistance, cloud hooks | Build `exitium_save` with schema versions, migration chains, zstd, an authenticated encryption layer, and a provider trait for Steam cloud and our own backend. |
 | 18 | UI | Both a retained widget tree and immediate mode. The editor uses egui. | The game UI is a custom retained tree (flex layout, theming, data binding, markup files) plus an immediate-mode layer for debug and tools. The editor is egui. |
-| 19 | Pixel art | All features matter | Virtual resolution with integer scaling, sub-pixel camera, palette swap/indexed color, Aseprite import, pixel-perfect rotation, normal-mapped 2D lighting. Scheduled after Glutton's needs. |
+| 19 | Pixel art | All features matter | Virtual resolution with integer scaling, sub-pixel camera, palette swap/indexed color, Aseprite import, pixel-perfect rotation, normal-mapped 2D lighting. In the MVP as Stage 4, built correct and tested but not yet optimized (`docs/specs/mvp-roadmap.md`). |
 | 20 | Camera modes / tiles / physics | All three modes, depth-sorted iso with height levels, tilemaps for all modes, Rapier | Use `rapier2d`. |
-| 21 | Networking | Authoritative server + client. Concurrent players in the thousands now, offline gains for many more. Architecture optimized toward 100M concurrent. | Engine provides netcode, a headless server runtime, and horizontally scalable/stateless server design. See C18. |
-| 22 | Destruction | Both cellular (Noita-like) and polygon fracture; specifics later | Groundwork only: chunked grid storage, GPU compute pipeline, dirty-region tracking, dynamic collider regeneration interface. |
+| 21 | Networking | Authoritative server + client. Concurrent players in the thousands now, offline gains for many more. Architecture optimized toward 100M concurrent. | Engine provides netcode, a headless server runtime, and horizontally scalable/stateless server design. See C18. Netcode, the server and the backend are in the MVP. Network scale-out (Phase 9) is not. |
+| 22 | Destruction | Both cellular (Noita-like) and polygon fracture; specifics later | Groundwork only: chunked grid storage, GPU compute pipeline, dirty-region tracking, dynamic collider regeneration interface. Out of the MVP (Phase 9). |
 | 23 | MCP | All of it: docs/API queries, live editor/game control, builds/tests/benchmarks. **The engine assumes the main user is an AI agent.** | Every editor capability must be reachable through MCP. This is a core design rule, not an add-on. |
 | 24 | Graphify | Git hook on each push; graph output committed | `graphify-out/` lives in the repo. A pre-push hook regenerates it. See R9. Superseded by ADR-0004: the graph is local and gitignored. |
 | 25 | GitHub | New private repo `nathanialwm/ExitiumEngine` | |
@@ -108,8 +110,8 @@ Later consumers:
 | C18 | Backend scope | The engine provides netcode, the headless server runtime, and optimized **hookups** for external hosting/orchestration services (e.g. Multiplay-style providers). The engine's own backend must be able to run Glutton's online features: cloud saves, leaderboards, server-side offline gains. |
 | C19 | Lua | Luau. Full engine access. **Modding is a future goal.** |
 | C20 | Glutton art | No pixel art; UI plus hand-drawn assets only. |
-| C21 | Steam | Steamworks integration lives in the engine. The itch.io build and the Steam demo release together. |
-| C22 | Game repo | Separate repo. Working title **Glutton**. |
+| C21 | Steam | Steamworks integration lives in the engine. The itch.io build and the Steam demo release together. In the MVP, Steam works by hand with Valve's test app, and the CLI produces the depot layout and the itch zip. The owner pushes the release workflows. |
+| C22 | Game repo | Separate repo. Working title **Glutton**. Superseded 2026-11-24: rehearsal games live in the repo root `examples/`, and a real game is built in a new folder after the MVP is tested. The Glutton repo is out of the MVP. |
 
 ---
 
@@ -132,9 +134,9 @@ These came out of the answers and need a decision, a spike, or at least awarenes
 **R4. The 5% usage gate (A8).** This needs a reliable way to read remaining session usage. The candidates are Claude Code's status-line/usage data or the `/usage` output. Which one is exposed programmatically must be verified in Phase 0. Fallback: the orchestrator asks before starting each new issue once usage is uncertain.
 
 **R5. Web target constraints.**
-- Threads on the web need `SharedArrayBuffer`, which requires cross-origin isolation headers. itch.io supports this as an opt-in option.
-- WebGPU isn't available in every browser. The Jam MVP web build uses wgpu's WebGPU backend only, so browsers without WebGPU are unsupported for now. A WebGL2 fallback is deferred, not dropped, and would limit compute shaders on the web (`docs/specs/jam-mvp.md`, `docs/specs/render-v1.md`).
-- Building Luau for WASM through `mlua` needs an early spike.
+- Threads on the web need `SharedArrayBuffer`, which requires cross-origin isolation headers, and also `-C target-feature=+atomics` with `build-std`, which is nightly Rust. **Decided 2026-11-24:** web threads are out of the MVP, and the web build stays single-threaded.
+- WebGPU isn't available in every browser. The web build uses wgpu's WebGPU backend only, so browsers without WebGPU are unsupported for now. A WebGL2 fallback is out of the MVP, not dropped, and would limit compute shaders on the web (`docs/specs/mvp-roadmap.md`, `docs/specs/render-v1.md`).
+- Building Luau for WASM through `mlua` needs an early spike. **Decided 2026-11-24:** the spike runs first (SP1 in the roadmap). If it fails, scripts are native-only and web builds run without Luau, and `exitium_script` still builds for wasm as a no-op stub. Rust gameplay must be enough to play every web-exported example.
 
 The engine must degrade gracefully, e.g. a single-threaded scheduler and no compute path on the web.
 
@@ -158,5 +160,5 @@ The engine must degrade gracefully, e.g. a single-threaded scheduler and no comp
 2. **One reflection source of truth.** A single `#[derive(Reflect)]` drives inspector UI, text/binary serialization, Luau bindings, MCP schemas and save migration.
 3. **Command bus for all mutation.** Editor actions, MCP calls and Lua edits are typed, serializable commands. This gives undo/redo, audit logs, replays and agent safety from one mechanism.
 4. **Performance is measured, never assumed.** Every hot system has a benchmark, and CI blocks any regression over 5%. Minimum-spec profiles (4 threads, 8 GB) are part of the bench suite.
-5. **Glutton drives priority; the engine stays general.** Build what Glutton needs first, without shortcuts that block sidescroller, isometric, pixel art, multiplayer or destruction later.
+5. **The rehearsal games drive priority; the engine stays general.** Build what the six `examples/` games need (`docs/specs/mvp-roadmap.md`), without shortcuts that block multiplayer or destruction later. *(Originally "Glutton drives priority"; Glutton is no longer the driver.)*
 6. **Readable for a basic-level Rust reviewer.** Clear module boundaries, minimal macro magic in user-facing APIs, and documented invariants.

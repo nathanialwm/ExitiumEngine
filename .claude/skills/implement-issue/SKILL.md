@@ -5,7 +5,7 @@ description: Take one approved Exitium GitHub issue from branch to open PR, meet
 
 # Implement an issue
 
-`T` means `GH_TOKEN="$(scripts/factory/gh-app-token.sh)" gh`.
+`T` is short for `scripts/factory/gh-app.sh`, which runs gh as the App (CLAUDE.md "GitHub identity"): `T issue view 42` means `scripts/factory/gh-app.sh issue view 42`.
 
 1. **Read the issue:** `T issue view <N>`. Also read any linked spec or ADR. If the acceptance criteria are unclear, stop and comment a question on the issue. Do not guess.
 2. **Branch:** first check whether the issue already has a branch. Use the one the prompt names; otherwise run `git ls-remote --heads origin | cut -f2 | grep -E '^refs/heads/[a-z]+/<N>-[^/]+$'`, which matches only `<type>/<N>-<slug>` names.

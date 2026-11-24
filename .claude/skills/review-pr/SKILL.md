@@ -5,7 +5,7 @@ description: Adversarially review an Exitium PR and post the verdict as the fact
 
 # Review a PR
 
-`T` means `GH_TOKEN="$(scripts/factory/gh-app-token.sh)" gh`.
+`T` is short for `scripts/factory/gh-app.sh`, which runs gh as the App (CLAUDE.md "GitHub identity"): `T pr diff 42` means `scripts/factory/gh-app.sh pr diff 42`.
 
 1. **Load:** `T pr view <N> --json title,body,headRefOid,files,labels`, then `T pr diff <N>`. Read the linked issue's acceptance criteria.
 2. **Check out the head** in a scratch worktree. Run the definition-of-done commands from the `implement-issue` skill. A failure means changes requested.

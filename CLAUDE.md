@@ -53,13 +53,15 @@ High-risk changes still get extra reviewer scrutiny, not a human gate: new depen
 
 ## GitHub identity
 
-Agents act as the **exitium-factory** GitHub App, never as the owner. For API actions (issues, PRs, labels, reviews, statuses), wrap the command:
+Agents act as the **exitium-factory** GitHub App, never as the owner. For API actions (issues, PRs, labels, reviews, statuses), run gh through the wrapper:
 
 ```bash
-GH_TOKEN="$(scripts/factory/gh-app-token.sh)" gh <command>
+scripts/factory/gh-app.sh <gh args...>
 ```
 
-Credentials live in `~/.exitium-factory/`. Never print, copy or commit them. Exception: the GitHub Projects roadmap board belongs to the owner's account, and Apps can't reach it, so use plain `gh` for `gh project` commands only.
+The wrapper fetches a fresh App token and sets it only in gh's own environment (gh hands it on to processes it starts, such as git). It refuses `gh auth ...`, because `auth status` and `auth token` print the token. If no token is available, it exits 1 without running gh, so a failed fetch can never fall back to the owner's stored login. Never fetch the token yourself or set `GH_TOKEN` by hand: `GH_TOKEN="$(scripts/factory/gh-app-token.sh)" gh ...` runs gh as the owner when the fetch fails.
+
+Credentials live in `~/.exitium-factory/`. Never print, copy or commit them or the token, and never write the token to a file or gh config. Exception: the GitHub Projects roadmap board belongs to the owner's account, and Apps can't reach it, so use plain `gh` for `gh project` commands only.
 
 ## Factory operating rules
 

@@ -11,8 +11,20 @@
 # without running gh. Running gh with an empty GH_TOKEN would make it fall back
 # to its stored login, which on the factory machine is the owner's account.
 #
-# Exit codes: gh's own exit code, or 1 when no token was available.
+# `gh auth ...` is refused: `auth status` and `auth token` print the token.
+#
+# Exit codes: gh's own exit code, or 1 when no token was available or the
+# command was refused.
 set -euo pipefail
+# Tracing (bash -x) would print the token below; turn it off for this script.
+set +x
+
+case "${1-}" in
+  auth)
+    echo "gh-app.sh: 'gh auth' can print the App token and is not allowed; gh was not run" >&2
+    exit 1
+    ;;
+esac
 
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -22,8 +34,8 @@ token="$("$here/gh-app-token.sh")" || {
   echo "gh-app.sh: could not get a factory App token; gh was not run" >&2
   exit 1
 }
-[ -n "$token" ] || {
-  echo "gh-app.sh: the factory App token is empty; gh was not run" >&2
+[[ "$token" =~ ^[^[:space:]]+$ ]] || {
+  echo "gh-app.sh: the factory App token is empty or malformed; gh was not run" >&2
   exit 1
 }
 

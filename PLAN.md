@@ -246,7 +246,7 @@ Phases 1 to 9 are the epics #3 to #11 and stay as the long-term checklists. `doc
 Replaces the Glutton phase. Glutton is no longer the driver, and the Glutton repo (epic #9) is out of the MVP.
 
 1. Six games, each depending only on the `exitium` facade: `topdown`, `sidescroller`, `isometric`, `pixel_art`, `incremental` and `netplay`.
-2. Each is built by an agent through MCP, Rust and Luau, refined by a human in the editor, and exported to a Windows exe and to the web. Rust gameplay must be enough to play the web build.
+2. Each is built by an agent through MCP and Rust (plus Luau where the roadmap lists it), refined by a human in the editor, and exported to a Windows exe and to the web. Rust gameplay must be enough to play the web build.
 3. Engine gaps found here become issues on the engine board.
 
 **Exit = the full MVP:** all six games run as a Windows exe and as a web build in Chrome, and the online path works from both.

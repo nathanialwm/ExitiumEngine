@@ -196,11 +196,7 @@ fn run_rounds(checkouts: &Checkouts, rounds: usize, allow_removed: bool) -> Resu
     measure(checkouts, Pass::First, rounds, None)?;
     let first = collect_rounds(&checkouts.criterion_dir, Pass::First)?;
     if !allow_removed {
-        let missing: Vec<&str> = first
-            .iter()
-            .filter(|b| b.head.is_empty())
-            .map(|b| b.name.as_str())
-            .collect();
+        let missing = missing_at_head(&first);
         if !missing.is_empty() {
             return Err(removed_error(&format!(
                 "no HEAD result for: {}",
@@ -240,12 +236,7 @@ fn measure(
     filter: Option<&str>,
 ) -> Result<(), String> {
     for round in 1..=rounds {
-        let order = if round % 2 == 1 {
-            [Side::Base, Side::Head]
-        } else {
-            [Side::Head, Side::Base]
-        };
-        for side in order {
+        for side in side_order(round) {
             let (label, name) = (pass.label(), side.name());
             println!("bench-ci: {label} round {round}/{rounds}, {name}");
             let mut args: Vec<String> = filter.map(String::from).into_iter().collect();
@@ -254,6 +245,16 @@ fn measure(
         }
     }
     Ok(())
+}
+
+/// Which side runs first in 1-based `round`: base in odd rounds, HEAD in even
+/// ones, so slow drift over the job does not favor one side.
+fn side_order(round: usize) -> [Side; 2] {
+    if round % 2 == 1 {
+        [Side::Base, Side::Head]
+    } else {
+        [Side::Head, Side::Base]
+    }
 }
 
 fn round_args(pass: Pass, side: Side, round: usize) -> Vec<String> {
@@ -286,6 +287,16 @@ fn exact_filter(ids: &[&str]) -> String {
     };
     let escaped: Vec<String> = ids.iter().map(|id| escape(id)).collect();
     format!("^({})$", escaped.join("|"))
+}
+
+/// Names of the benchmarks that have base rounds but no HEAD rounds, i.e. ones
+/// HEAD removed or renamed.
+fn missing_at_head(benches: &[Rounds]) -> Vec<&str> {
+    benches
+        .iter()
+        .filter(|b| !b.base.is_empty() && b.head.is_empty())
+        .map(|b| b.name.as_str())
+        .collect()
 }
 
 /// A removed or renamed benchmark could hide a regression, so it fails the gate
@@ -352,8 +363,12 @@ fn flags(bench: &Rounds, threshold_percent: f64) -> bool {
 /// The rule: a benchmark regressed when the first pass flags it and the confirm
 /// pass flags it again. Without confirm rounds (`bench-compare` at a lower
 /// threshold than `bench-ci` used), the first pass decides alone.
+///
+/// A confirm entry with rounds on only one side (`bench-compare` on a
+/// half-written criterion dir) cannot clear a flag, so it counts as flagged.
 fn regressed(first: &Rounds, confirm: Option<&Rounds>, threshold_percent: f64) -> bool {
-    flags(first, threshold_percent) && confirm.is_none_or(|c| flags(c, threshold_percent))
+    flags(first, threshold_percent)
+        && confirm.is_none_or(|c| c.change().is_none() || flags(c, threshold_percent))
 }
 
 fn gate(
@@ -711,6 +726,45 @@ mod tests {
     }
 
     #[test]
+    fn confirm_pass_missing_a_side_keeps_the_flag() {
+        let first = rounds(&NOISE, &slower(1.10));
+        assert!(regressed(&first, Some(&rounds(&NOISE, &[])), 5.0));
+        assert!(regressed(&first, Some(&rounds(&[], &NOISE)), 5.0));
+        // It still cannot flag a benchmark the first pass cleared.
+        let clean = rounds(&NOISE, &NOISE);
+        assert!(!regressed(&clean, Some(&rounds(&NOISE, &[])), 5.0));
+    }
+
+    #[test]
+    fn missing_at_head_lists_only_removed_benchmarks() {
+        let named = |name: &str, base: &[f64], head: &[f64]| Rounds {
+            name: name.into(),
+            ..rounds(base, head)
+        };
+        let benches = [
+            named("g/kept", &NOISE, &NOISE),
+            named("g/removed", &NOISE, &[]),
+            named("g/added", &[], &NOISE),
+        ];
+        assert_eq!(missing_at_head(&benches), ["g/removed"]);
+        assert!(missing_at_head(&benches[..1]).is_empty());
+    }
+
+    #[test]
+    fn rounds_alternate_which_side_goes_first() {
+        // The module docs' order: base-1 head-1 head-2 base-2 base-3 head-3 ...
+        let order: Vec<String> = (1..=4)
+            .flat_map(|round| side_order(round).map(|side| baseline(Pass::First, side, round)))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "base-1", "head-1", "head-2", "base-2", "base-3", "head-3", "head-4", "base-4"
+            ]
+        );
+    }
+
+    #[test]
     fn median_of_odd_and_even_counts() {
         assert_eq!(median(&[]), None);
         assert_eq!(median(&[3.0, 1.0, 2.0]), Some(2.0));
@@ -817,6 +871,14 @@ mod tests {
         assert!(gate(&[rounds(&NOISE, &slower(1.2))], &[slow], 5.0, true).is_err());
         let cleared = rounds(&NOISE, &NOISE);
         assert!(gate(&[rounds(&NOISE, &slower(1.2))], &[cleared], 5.0, true).is_ok());
+    }
+
+    #[test]
+    fn gate_fails_closed_on_a_half_written_confirm_pass() {
+        // `bench-compare` on a criterion dir whose confirm pass has no HEAD rounds.
+        let half_written = rounds(&NOISE, &[]);
+        let slow = rounds(&NOISE, &slower(1.2));
+        assert!(gate(&[slow], &[half_written], 5.0, false).is_err());
     }
 
     #[test]

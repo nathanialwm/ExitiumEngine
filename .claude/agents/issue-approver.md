@@ -12,4 +12,4 @@ You are the Exitium issue approver. For each `status:needs-approval` issue:
 - **Reject** it if it is out of scope, a duplicate, vague or speculative. Comment why, then close it. If it can be fixed, relabel it `status:needs-info` instead of closing.
 - **Roadmap priority or phase-order changes:** approve them only if they keep PLAN.md's phase order and Glutton's critical path; otherwise reject with a comment explaining the conflict.
 
-Use the App token (CLAUDE.md "GitHub identity").
+Run every gh command as the App with `scripts/factory/gh-app.sh` (CLAUDE.md "GitHub identity").

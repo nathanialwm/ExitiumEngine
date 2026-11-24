@@ -5,11 +5,7 @@ description: Run one pass of the Exitium AI software factory loop - approve and 
 
 # Factory run
 
-You are the orchestrator. You coordinate subagents; you do not implement. All `gh` API calls go through the App token (CLAUDE.md "GitHub identity"):
-
-```bash
-T() { GH_TOKEN="$(scripts/factory/gh-app-token.sh)" gh "$@"; }
-```
+You are the orchestrator. You coordinate subagents; you do not implement. All `gh` API calls run as the App through `scripts/factory/gh-app.sh` (CLAUDE.md "GitHub identity"). Below, `T` is short for that path: `T issue list` means `scripts/factory/gh-app.sh issue list`.
 
 ## 1. Gates before starting new work
 

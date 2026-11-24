@@ -6,7 +6,7 @@ description: File a well-formed Exitium GitHub issue as the factory App (follow-
 # File an issue
 
 1. Search first: `T issue list --search "<keywords>" --state all`. If a matching issue exists, comment on it instead of filing a new one.
-2. File it (`T` means `GH_TOKEN="$(scripts/factory/gh-app-token.sh)" gh`):
+2. File it (`T` is short for `scripts/factory/gh-app.sh`, which runs gh as the App):
    ```bash
    T issue create --title "<type>(<scope>): <summary>" \
      --label status:needs-approval --label "area:<area>" \

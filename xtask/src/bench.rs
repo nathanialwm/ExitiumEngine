@@ -745,6 +745,8 @@ mod tests {
             named("g/kept", &NOISE, &NOISE),
             named("g/removed", &NOISE, &[]),
             named("g/added", &[], &NOISE),
+            // `collect_rounds` never yields this, but it is not a removal.
+            named("g/empty", &[], &[]),
         ];
         assert_eq!(missing_at_head(&benches), ["g/removed"]);
         assert!(missing_at_head(&benches[..1]).is_empty());
@@ -875,10 +877,12 @@ mod tests {
 
     #[test]
     fn gate_fails_closed_on_a_half_written_confirm_pass() {
-        // `bench-compare` on a criterion dir whose confirm pass has no HEAD rounds.
-        let half_written = rounds(&NOISE, &[]);
-        let slow = rounds(&NOISE, &slower(1.2));
-        assert!(gate(&[slow], &[half_written], 5.0, false).is_err());
+        // `bench-compare` on a criterion dir whose confirm pass is missing a side.
+        for half_written in [rounds(&NOISE, &[]), rounds(&[], &NOISE)] {
+            let slow = rounds(&NOISE, &slower(1.2));
+            let err = gate(&[slow], &[half_written], 5.0, false).unwrap_err();
+            assert!(err.contains("regressed"), "unexpected error: {err}");
+        }
     }
 
     #[test]

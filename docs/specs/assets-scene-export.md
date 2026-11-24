@@ -2,17 +2,19 @@
 
 - Issue: #111
 - Crates: `exitium_assets`, `exitium_scene`, `exitium_audio`, `exitium_cli` (touchpoints: `exitium_serial`, `exitium_reflect`, `exitium_ecs`, the `exitium` facade, `exitium_render`, `exitium_ui`, and `exitium_editor` and `exitium_mcp` through #110)
-- Status: draft. Owner-approved: the contract in `docs/specs/jam-mvp.md` (Rust only, WebGPU only on the web, kira for audio, the editor as a feature of the game binary, Windows and Chrome as the only tested targets). Everything else here is the author's proposal. The owner has decided one licensing point: a narrow `deny.toml` exception for kira's MPL-2.0 crate `triple_buffer`, recorded in an ADR in the intake 1 PR (see "Licence decision").
+- Status: draft. Owner-approved: the contract in `docs/specs/jam-mvp.md` (Rust only, WebGPU only on the web, kira for audio, the editor as a feature of the game binary, Windows and Chrome as the only tested targets). Everything else here is the author's proposal. The owner has decided one licensing point: a narrow `deny.toml` exception for kira's MPL-2.0 crate `triple_buffer`. Its ADR is its own PR (AD1, #137) and intake 1 (#156) carries only the `deny.toml` entry (see "Licence decision"). Amended by SP4 (#140) for the full-MVP roadmap (`docs/specs/mvp-roadmap.md`, the plan of record): asset hot reload is restored to the MVP (see "Hot reload"), and the editor and MCP surface follows AM9 of `docs/specs/editor-mcp-mvp.md`.
 
 ## Goal
 
-Specify everything a game needs between "a file on disk" and "a running game that can be shipped": how assets are named, loaded and decoded on Windows and in the browser; how a scene is saved to and loaded from a text file through reflection; how sound and music play, including the browser's autoplay rule; and how `exitium new` and `exitium export` create a game project and package it as a zipped Windows exe or an itch.io-ready web build.
+Specify everything a game needs between "a file on disk" and "a running game that can be shipped": how assets are named, loaded and decoded on Windows and in the browser; how a scene is saved to and loaded from a text file through reflection; how sound and music play, including the browser's autoplay rule; how a file edited on disk reaches a running native game (hot reload) and what the web does instead; and how `exitium new` and `exitium export` create a game project and package it as a zipped Windows exe or an itch.io-ready web build.
 
 Four crates are involved. `exitium_assets`, `exitium_audio` and `exitium_scene` are runtime crates (they build for wasm32). `exitium_cli` is native Windows only (already in `NATIVE_ONLY`). By cross-spec ruling (a) and rule C1, none of the three runtime crates has an edge to another runtime crate. Loaded data reaches render, audio and UI through glue in the `exitium` facade, which this spec describes as a contract and files as facade issues.
 
 ## Non-goals
 
-- Luau, binary scene format, prefab variants, data assets, asset hot reload, streaming audio, MP3 and other codecs, JPEG and WebP, texture compression, atlas packing, a pack file, a content hash cache. All are deferred (contract, or proposed in "Scope" below) and the design leaves their path open.
+- Streaming audio, MP3 and other codecs, JPEG and WebP, texture compression, atlas packing, a pack file, a content hash cache. This spec does not build them, and the design leaves their path open.
+- Other specs own these, and `docs/specs/mvp-roadmap.md` restores them to the MVP: Luau (SP9), data assets and prefab variants (SP10, #146), and the binary container for saves (#24, SP14). Scenes here are text only. This spec says where each plugs in: the `AssetKind` variants a later kind adds, and the rules every reload consumer follows ("Hot reload").
+- On the web: file watching (a browser has none), and live-patching a running world from a changed scene file on any target. Both are explained in "Hot reload".
 - `AssetRef<T>`. The MVP uses plain `Guid` fields (decision D1). The typed wrapper is a later, additive change.
 - Building the MCP tools, editor panels and commands. #110 builds them. This spec lists the plain Rust functions they call and the behaviour they must expose ("MCP / editor surface"). It files no issue in `exitium_mcp` or `exitium_editor`.
 - The default engine font, the facade re-export lists, `DefaultPlugins` entries and the sample game. They are facade work (render-v1.md open question 7, app-platform.md F3).
@@ -35,6 +37,9 @@ Four crates are involved. `exitium_assets`, `exitium_audio` and `exitium_scene` 
 | D8 | Audio is kira with default features off. No kira type is public. On the web the audio device is created at the first user gesture. | kira is the owner's choice. Hiding it keeps the engine's audio API independent of the library. Browsers keep an `AudioContext` created before a gesture suspended. |
 | D9 | The CLI uses no `clap` and no TOML or JSON crate. The project file is text format read through `exitium_serial`'s syntax tree. Archives are written with the `zip` crate. | Two subcommands do not need a parser crate. One grammar for every authored file. `Compress-Archive` on Windows PowerShell 5.1 writes backslash paths that break on the web. |
 | D10 | Web export needs `wasm-bindgen-cli` at exactly the locked `wasm-bindgen` version, **0.2.130**. No CI change is required. | The `wasm-bindgen` schema must match the library in the wasm file. |
+| D11 | Hot reload is a std polling thread (default 4 Hz) that stats only the **loaded** assets. Native only. No `notify`, no new dependency. On the web there is no watcher, and an explicit `reload` still works. | The budget is 500 ms from file write to texture on screen; a 250 ms poll plus decode fits (about 390 ms worst case). Nothing to add to `Cargo.lock`, `deny.toml` or the wasm tree. Watching only loaded assets means editor temp files and unregistered files cost nothing. |
+| D12 | A reload that fails never replaces a good value. The asset stays `Ready`, the consumer keeps its copy, and the error is reported. A consumer swaps a reloaded value at one point in the frame. | Saving a half-written file is the normal case for an agent or an editor. The running game must not lose a texture, a tree or a pipeline because of it. |
+| D13 | A reload is the same `Loaded` item as a first load, with `generation >= 2`. The server re-reads files. What a reload means is the consumer's: textures and fonts replace, clips replace for new plays, `.ui` trees swap, scenes only notify. | One path for every kind, so data assets (SP10), scripts (SP9) and any later kind need no change in this crate. |
 
 ### Crate map
 
@@ -53,7 +58,8 @@ exitium_assets/ (paths relative to src/ except examples/)       Stage 1 unless m
   native.rs      scan, copy-in, downscale, atomic write, trash       (not wasm32)
   manifest.rs    Manifest, read and write on the text format         Stage 2, feature `manifest`
   edit.rs        import, rename, remove, settings, undo records      Stage 2, feature `manifest`
-  plugin/        AssetPlugin, AssetStatus, events, poll system       Stage 2, feature `plugin`
+  watch.rs       polling watcher thread, WatchSet, Stamp             Stage 1 (not wasm32)
+  plugin/        AssetPlugin, AssetStatus, AssetSettings, events, poll and reload systems   Stage 2, feature `plugin`
   examples/      assets_demo.rs, web/index.html, fixtures
 
 exitium_audio/ (paths relative to src/ except examples/)        Stage 1 unless marked
@@ -74,7 +80,7 @@ exitium_cli/ (src/, and template/ beside it)                     Stage 4, native
 
 - **`Guid`** (from `exitium_core`) names an asset for good. It survives a rename, a move and a re-import. A saved scene stores the `Guid`, never the path.
 - **`AssetPath`** is a validated `String`, relative to the asset root, `/`-separated. Rules: ASCII letters, digits, `_`, `-`, `.` and `/` only; no empty, `.` or `..` segment; no segment that starts with `.`; at most 200 bytes; no two paths in one manifest that differ only by case (Windows is case-insensitive and the web is not, so the exporter would otherwise ship a game that works only on one of them); the name `assets.manifest` is reserved. `AssetPath::sanitize(file_name)` returns a legal suggestion (`Hero Portrait (1).png` becomes `hero_portrait_1.png`), used by the import error message. The restriction keeps URLs, zip entries and Windows names safe without escaping.
-- **`AssetKind`** is chosen by extension (case-insensitive): `png` is `Image`; `ttf`, `otf` are `Font`; `wav`, `ogg` are `Audio`; `scene` is `Scene`; `txt`, `ui` are `Text`. `Scene` and `Text` are both UTF-8 text payloads. They are separate kinds so tools can list scenes. A `.ui` file holds the text form of a `UiNodeDesc` (ui-mvp.md open question 8); the UI plugin, not this crate, parses it.
+- **`AssetKind`** is chosen by extension (case-insensitive): `png` is `Image`; `ttf`, `otf` are `Font`; `wav`, `ogg` are `Audio`; `scene` is `Scene`; `txt`, `ui` are `Text`. `Scene` and `Text` are both UTF-8 text payloads. They are separate kinds so tools can list scenes. A `.ui` file holds the text form of a `UiNodeDesc` (ui-mvp.md open question 8); the UI plugin, not this crate, parses it. `AssetKind` is `#[non_exhaustive]`: data assets (SP10), scripts (SP9) and user shaders (SP12, if it adds them) are other specs' kinds, each adding a variant and an extension row, and hot reload needs nothing else from them.
 - **Minting.** `exitium_core` has no random source (its `guid.rs` says the asset database mints them). `AssetRegistry::mint(path)` returns a UUID-shaped value (version nibble 8, variant bits `10`) from FNV-1a 128 over `path`, a zero byte and a `u32` attempt counter, and increments the counter while the value is already in the registry. It is deterministic, needs no crate, and is pinned by golden vectors. The same path in two projects mints the same value, which is harmless: a `Guid` is only meaningful inside one project.
 
 ```rust
@@ -137,6 +143,8 @@ pub struct AssetConfig {
     pub max_undelivered_bytes: usize,     // default 128 MiB: workers pause above this
     pub max_fetches: u8,                  // web, default 6 in flight
     pub decode_budget_ms: f32,            // web, default 4.0: decode at least one asset per frame, more while under budget
+    pub hot_reload: HotReload,            // native only, default off ("Hot reload")
+    pub max_reload_deliveries: u8,        // default 2: reload payloads that `take_loaded` releases per frame
 }
 pub struct AssetLimits { pub max_file_bytes: usize /*64 MiB*/, pub max_image_dim: u32 /*8192*/, pub max_audio_frames: u32 /*16 Mi*/, pub max_text_bytes: usize /*16 MiB*/ }
 
@@ -144,7 +152,7 @@ pub enum AssetState { Unloaded, Loading, Ready, Failed(AssetError) }
 pub enum Payload { Image(DecodedImage), Font(Vec<u8>), Audio(DecodedAudio), Text(String) }
 pub struct DecodedImage { pub width: u32, pub height: u32, pub rgba8: Vec<u8> }   // straight alpha, sRGB-encoded, row-major, top-left origin: render's ImageData
 pub struct DecodedAudio { pub sample_rate: u32, pub frames: Vec<[f32; 2]> }      // mono is duplicated
-pub struct Loaded { pub guid: Guid, pub kind: AssetKind, pub payload: Payload }
+pub struct Loaded { pub guid: Guid, pub kind: AssetKind, pub payload: Payload, pub generation: u32 }   // generation 1: first load; 2 and up: a reload
 
 impl AssetServer {
     pub fn new(config: AssetConfig, registry: AssetRegistry) -> AssetServer;
@@ -154,8 +162,13 @@ impl AssetServer {
     pub fn state(&self, guid: Guid) -> AssetState;
     pub fn retry(&mut self, guid: Guid);                                 // Failed to Loading
     pub fn forget(&mut self, guid: Guid);                                // Ready to Unloaded; the consumer drops its own copy
-    pub fn poll(&mut self);                                              // once per frame, main thread: collect finished jobs
+    pub fn reload(&mut self, guid: Guid) -> bool;                        // re-read a Ready asset, both targets ("Hot reload"); false when Unloaded or Failed
+    pub fn reload_all(&mut self, kind: Option<AssetKind>) -> usize;      // every Ready asset, optionally of one kind; returns how many started
+    pub fn generation(&self, guid: Guid) -> u32;                         // 0 Unloaded, 1 after the first load, +1 per successful reload
+    pub fn last_reload_error(&self, guid: Guid) -> Option<&AssetError>;  // cleared by the next successful reload
+    pub fn poll(&mut self);                                              // once per frame, main thread: collect finished jobs (and, native, the watcher's changes)
     pub fn take_loaded(&mut self, kind: AssetKind) -> impl Iterator<Item = Loaded> + '_;   // each payload is delivered exactly once
+    pub fn take_loaded_guid(&mut self, guid: Guid) -> Option<Loaded>;   // for a consumer that owns specific Guids (several consumers share `Text`)
     pub fn pending(&self) -> usize;                                      // Loading plus undelivered
     pub fn stats(&self) -> AssetStats;
 }
@@ -203,7 +216,7 @@ Decode is the whole cost of "decoding fonts": render's `FontStore::insert_font(g
 | Scene glue | `Scene` | parse and instantiate (below) |
 | Whoever requested it | `Text` | the UI plugin parses `.ui` files |
 
-A payload nobody takes stays queued. The plugin warns once per kind after 120 frames and `AssetStats.undelivered_bytes` shows it.
+A payload nobody takes stays queued. The plugin warns once per kind after 120 frames and `AssetStats.undelivered_bytes` shows it. A reload payload (`generation >= 2`) is handed out the same way, at most `max_reload_deliveries` per frame, and what each consumer does with it is in "Hot reload". `Text` has more than one consumer (the UI plugin, and later data assets), so a consumer that knows its own `Guid`s takes them with `take_loaded_guid` instead of draining the kind.
 
 #### Native-only helpers (`native.rs`, not wasm32)
 
@@ -309,7 +322,7 @@ pub struct SceneId(pub u32);
 pub struct Scenes { pub next: u32, pub scenes: Vec<SceneInfo>, pub active: Option<SceneId> }   // SceneInfo { id, source: Option<String> asset path }
 ```
 
-**Membership is the save scope.** Only entities with `SceneMember(id)` are written for scene `id`. Instantiating a scene tags every entity it spawns. Entities that game code spawns at runtime (bullets, particles, editor helpers) carry no `SceneMember` and are never saved by accident. The command that spawns an entity for authoring (#110) must call `mark_member`. This is the one rule #110 has to honour (see "MCP / editor surface").
+**Membership is the save scope.** Only entities with `SceneMember(id)` are written for scene `id`. Instantiating a scene tags every entity it spawns. Entities that game code spawns at runtime (bullets, particles, editor helpers) carry no `SceneMember` and are never saved by accident. The editor registers a `SpawnHooks` entry (editor-mcp-mvp.md) that calls `mark_member`, so `ecs_spawn_entity` from MCP and "Create entity" in the hierarchy mark the new entity the same way. This is the one rule the editor has to honour (see "MCP / editor surface").
 
 #### API
 
@@ -398,6 +411,7 @@ impl AudioEngine {
     pub fn state(&self) -> &AudioState;
     pub fn insert_clip(&mut self, data: ClipData) -> Result<ClipId, AudioError>;   // 1..=16 Mi frames, 8,000..=192,000 Hz
     pub fn remove_clip(&mut self, id: ClipId) -> bool;                              // stops its voices
+    pub fn replace_clip(&mut self, id: ClipId, data: ClipData) -> Result<(), AudioError>;   // hot reload: same id; new plays use `data`, voices in flight finish on the old frames, the music slot crossfades to it
     pub fn play(&mut self, clip: ClipId, opts: &PlayOptions) -> Option<Voice>;      // None: locked, unavailable, limit reached or missing clip (counted)
     pub fn stop(&mut self, voice: Voice, fade: f32);        pub fn stop_all(&mut self, fade: f32);    pub fn is_playing(&self, voice: Voice) -> bool;
     pub fn play_music(&mut self, clip: ClipId, opts: &MusicOptions);   // the same clip already playing is left alone
@@ -420,7 +434,7 @@ A browser keeps an `AudioContext` that was created before any user gesture in th
 
 #### Plugin (Stage 2, feature `plugin`)
 
-`AudioPlugin` inserts `Audio` (a resource wrapping the engine; kira's `AudioManager` is `Send + Sync`) and `ClipStore` (`Guid -> ClipId`, `insert(guid, ClipData)`, `get(guid)`), and registers the reflected types below. Systems: `apply_audio_settings` in `Update` (pushes `AudioSettings` to the engine when it `is_changed`), `audio_events` (reads `PlayAudio`, `StopAllAudio`, `PlayMusic`, `StopMusic`), and `audio_update` in `Last` (`update()` and the `AudioStats` copy). Game code uses `ResMut<Audio>`: `audio.play_guid(guid, &PlayOptions::default())` looks the clip up in the `ClipStore` (a clip that is not loaded is `dropped_missing`).
+`AudioPlugin` inserts `Audio` (a resource wrapping the engine; kira's `AudioManager` is `Send + Sync`) and `ClipStore` (`Guid -> ClipId`, `insert(guid, ClipData)`, `get(guid)`; `insert` on a `Guid` that already has a clip calls `replace_clip`, so a reloaded clip keeps its `ClipId`), and registers the reflected types below. Systems: `apply_audio_settings` in `Update` (pushes `AudioSettings` to the engine when it `is_changed`), `audio_events` (reads `PlayAudio`, `StopAllAudio`, `PlayMusic`, `StopMusic`), and `audio_update` in `Last` (`update()` and the `AudioStats` copy). Game code uses `ResMut<Audio>`: `audio.play_guid(guid, &PlayOptions::default())` looks the clip up in the `ClipStore` (a clip that is not loaded is `dropped_missing`).
 
 | Reflected type | Kind | Fields |
 |---|---|---|
@@ -430,15 +444,101 @@ A browser keeps an `AudioContext` that was created before any user gesture in th
 | `StopAllAudio`, `PlayMusic { clip: Guid, volume, fade_in, crossfade }`, `StopMusic { fade }` | events | |
 | `Bus` | enum | `Music`, `Sfx`, `Ui` |
 
+### Hot reload
+
+Restored to the MVP by `mvp-roadmap.md` (SP4; "Asset hot reload", Stages 1 and 2). The goal: save a PNG, WAV, Ogg, font or `.ui` file and see or hear the change in the running native game, with no restart. Budgets (roadmap "Performance"): file write to new texture on screen at most 500 ms on Windows, and no frame over 20 ms while it reloads.
+
+```rust
+pub struct HotReload { pub enabled: bool /*false*/, pub interval_ms: u32 /*250 (4 Hz), 50..=5000*/ }   // in AssetConfig; ignored on wasm32
+pub enum HotReloadState { Off, Polling, Unavailable /* wasm32 */ }
+```
+
+The default is **off** in the crate. `DefaultPlugins` (FA5) turns it on for debug builds and for the `editor` feature, so an exported game (a release build with `--no-default-features`, never `editor`) spawns no thread. Examples set it explicitly.
+
+#### What reloads, and what the consumer does
+
+| Source | On change | Swap owned by |
+|---|---|---|
+| `Image` | Decoded again with the registry's `ImageSettings`. The render glue replaces the texture stored under the same `Guid`, so sprites and UI images show it at the next extract. If the size changed, the UI nodes that measure that `Guid` are laid out again. | FA5; render I16 (replace semantics, "Downstream adjustments") |
+| `Font` | Validated, then `FontStore::insert_font` replaces the face; text that used it is shaped again. | FA5 |
+| `Audio` | `AudioEngine::replace_clip(id, data)` keeps the `ClipId`. New plays use the new frames. Voices already playing finish on the old frames. If the music slot is playing that clip, it crossfades to the new frames over its `crossfade`. | AUP2, FA5 |
+| `Text` (`.ui`) | Delivered to the UI plugin (`take_loaded_guid`), which parses it and swaps the tree at a frame boundary (markup hot reload, ui-mvp.md SP6, budget 100 ms). A parse error keeps the old tree. | the UI plugin |
+| `Scene` | **Never applied to the live world.** The glue sends `SceneFileChanged { path, scene }` and drops the payload. A running scene holds state the file does not (physics, gameplay, unsaved editor edits), and patching it would destroy that silently. An agent or a human decides (`scene_load` with `mode: replace`). | FA5 |
+| `assets.manifest` | Re-read and diffed ("Manifest reload"). | AP4 |
+| Data assets, prefab variants | Not designed here. SP10 (#146) adds the `AssetKind` variant and the consumer. The server reloads the file like any other and delivers `generation >= 2`. The dependency edge (a variant depends on its base, so a changed base re-resolves its variants) is SP10's and needs no change in this crate. | SP10 |
+| Shaders | The engine's own shaders are embedded `&'static str` and never reload (render-v1.md non-goal). If SP12 adds user shaders or materials as `.wgsl` files, they are a text kind that reloads through this path. The render consumer compiles the new module first and keeps the old pipeline on a validation error (rule 2). | SP12 |
+| Scripts | SP9 decides whether a `.luau` file is an asset kind. If it is, it follows the two rules below. | SP9 |
+
+**Two rules for every consumer.**
+1. **One swap point (D13).** A consumer applies a reloaded value in its own glue system, after `ASSETS`, in one step per asset, so no system in a frame sees half of a swap. It drops nothing until the new value exists: the old texture is released only after the new one is created.
+2. **A bad reload keeps the good value (D12).** A decode, parse or validation failure leaves the consumer's copy as it was and is reported as `AssetFailed { reload: true }`. The consumer never reports success for a value it did not apply.
+
+#### Detection: std polling, native only (D11)
+
+`watch.rs` is `#[cfg(not(target_arch = "wasm32"))]`. When `hot_reload.enabled` becomes true the server starts one thread, `exitium-assets-watch`, and joins it when the flag turns false or on `Drop`. The thread shares one `Mutex<WatchSet>` and one `mpsc` channel with the main thread, and never sees the world, the registry or a consumer.
+
+- **The watch set is the loaded assets, plus the manifest file.** An entry is `(Guid, PathBuf, Stamp { modified: SystemTime, len: u64 })`. The server adds it when it **starts reading** the asset, so the stamp predates the read: a write during the read gives a mismatch and another reload. `forget`, a manifest removal and a rename update the set. Files that are not loaded (a new file, an editor temp file, `.trash/`) are never statted.
+- **A tick** calls `fs::metadata` on each entry. A different stamp sends `Changed(guid)` and stores the new stamp. A missing file is **not** a change: editors save by writing a temp file and renaming it, so a gap of a tick or two is normal. After 4 consecutive misses (1 s at 4 Hz) the thread sends `Missing(guid)` once. The file coming back resets the count.
+- **The interval stretches.** The thread sleeps `max(interval_ms, 8 x the last sweep)`, so it uses at most about 12% of one core however many assets are loaded: 500 loaded assets sweep in about 5 ms (interval stays 250 ms); 5,000 sweep in about 50 ms (interval becomes 400 ms).
+- **Known limit.** The stamp is `(modified, len)`. On a filesystem with coarse timestamps a same-size edit within one timestamp tick is missed. NTFS (100 ns) is the supported case.
+- `AssetServer::poll` drains the channel and calls `reload` for each `Changed`, so a change costs nothing on the main thread until a frame polls.
+
+#### Reload flow
+
+`reload(guid)` works on **both targets** and is the only entry point; the watcher, `reload_all` and the `ReloadAssets` event all call it.
+
+- State machine: a reload does not change `AssetState`. The asset stays `Ready` the whole time, because the consumer still holds the old value. `reload` returns `false` for `Unloaded` (nothing to reload; the next `request` loads fresh) and for `Failed` (use `retry`).
+- A reload is a normal job (`reload: true`) on the same workers, with the same limits, source and back-pressure. On success the payload is queued with `generation + 1`. On failure the state and the generation stay, the error is stored for `last_reload_error`, `AssetStats.reload_failures` counts it, and `AssetFailed { reload: true }` is raised. The next successful reload clears the error.
+- **Last write wins.** A change that arrives while the asset is `Loading` or already reloading marks it dirty. When that job finishes, one more job starts at once. A burst of saves therefore costs at most one job running and one queued per asset, and the final bytes are the ones delivered. A half-written file fails to decode (rule 2), and the write finishing changes the stamp, so the next tick reloads it without any timer.
+- **Coalescing.** A reload payload that has not been taken yet is dropped when a newer reload of the same `Guid` finishes. Only the newest is delivered.
+- **Spreading.** `take_loaded` releases at most `max_reload_deliveries` (default 2) reload payloads per frame, across kinds. Extra payloads wait queued. A `git checkout` that touches 200 textures reloads over 100 frames instead of one hitch. First loads are not limited.
+- **Peak memory.** One reload holds the old value (in the consumer) and the new decoded payload, 2x for that asset, until the swap.
+- **Web.** The same `reload` runs on `wasm32`: `fetch` with `cache: "reload"` (bypasses the HTTP cache), then the budgeted decode, then the same queue and rules.
+
+#### Manifest reload
+
+The manifest file is in the watch set. On a change the plugin (AP4) re-reads it with `UnknownFields::Warn`, validates it as at startup, and diffs it against the registry:
+
+- **Any error keeps the old registry** (rule 2) and sets `AssetStatus.manifest_reload_error`. A later good write clears it.
+- **A new entry** is registered. It loads only when something requests it.
+- **A changed path** renames the entry (the `Guid` stays), updates the watch set and reloads the asset when it is `Ready`.
+- **Changed `ImageSettings`** reload the image, because the filter, mips and edge bleed change the decoded result and the texture.
+- **A removed entry** is unregistered. The consumer's copy stays until its owner calls `forget`, since unloading is manual in the MVP. The removal is logged once.
+- **The editor's own save is an empty diff** and does nothing: `save_manifest` (AP3) writes what the in-memory registry already holds.
+
+#### Web behaviour
+
+A browser cannot watch files, and the web build has no file system: assets arrive by `fetch`. So on `wasm32`:
+
+- `watch.rs` is not compiled. `HotReload` is ignored, `HotReloadState` is `Unavailable`, `AssetSettings.hot_reload` stays `false`, and one debug log line says so. Nothing else changes: the types, events, `generation`, `reload`, `reload_all`, `ReloadAssets` and the two consumer rules compile and behave the same, so game code and the facade glue need no `cfg`.
+- **An explicit reload works.** Game code, or a dev page that calls into the game, may call `reload(guid)`; nothing calls it by default. The dev loop on the web stays rebuild, `exitium export` (or `cargo build` plus `wasm-bindgen`), and a page reload. `exitium serve` sends no-cache headers so the reload sees the new files.
+- This adds no wasm-only dependency and does not touch WebGPU. `cargo build --workspace --target wasm32-unknown-unknown` and the `--no-default-features` build of this crate check it (A8, A9, AP4 acceptance).
+
+#### Events, status and the agent surface
+
+Reflected, so the editor and MCP read them without code (design rule 2):
+
+| Item | Fields |
+|---|---|
+| event `AssetChanged` | `guid`, `path: String`. Raised when the watcher reports a change, or when `reload` is called. |
+| event `AssetLoaded` | `guid`, `kind`, `generation`. `generation >= 2` means a reload payload was released to consumers. |
+| event `AssetFailed` | `guid`, `kind`, `message`, `reload: bool`. A failed reload leaves the asset `Ready`. |
+| event `ReloadAssets` | `guid: Option<Guid>`, `kind: Option<AssetKind>`. Both `None` reloads everything `Ready`. Read by the plugin's `reload_assets` system. |
+| resource `AssetSettings` | `hot_reload: bool`, `poll_interval_ms: u32` (`range(min = 50, max = 5000)`, default 250). Pushed to the watcher when `is_changed`. |
+| resource `AssetStatus` (added fields) | `hot_reload: HotReloadState`, `reloaded: u64`, `reload_failures: u64`, `reload_failed_list: Vec<AssetFailure>`, `manifest_reload_error: Option<String>` |
+
+No new MCP tool is needed (AM9's approach): `ecs_send_event` of `ReloadAssets` reloads from MCP and the editor, `ecs_set_resource_field` on `AssetSettings` turns the watcher on and off, and `ecs_get_resource` on `AssetStatus` reads the outcome. `asset_list` and `asset_get` also show `generation` and the last reload error. `ecs_send_event` is `UndoKind::NotUndoable` and journalled, which is right for a reload.
+
 ### Facade glue (contract)
 
-By ruling (a) the facade holds every cross-crate system. These are issues FA1 to FA4 below, each listing `crates/exitium/` under `Hotspots`. **FA1 is render-v1.md's G1b, not a second issue:** the architect files one issue (FA1, cross-linked as G1b), and adds this spec's blockers to it. The same holds for any other overlap with a peer spec's facade issue (the architect files each system once).
+By ruling (a) the facade holds every cross-crate system. These are issues FA1 to FA5 below, each listing `crates/exitium/` under `Hotspots`. **FA1 is render-v1.md's G1b, not a second issue:** the architect files one issue (FA1, cross-linked as G1b), and adds this spec's blockers to it. The same holds for any other overlap with a peer spec's facade issue (the architect files each system once).
 
 | Glue | Runs | Behaviour |
 |---|---|---|
 | Asset to render and UI (FA1, `AssetGluePlugin`) | `Update`, after the plugin's `ASSETS` set | `take_loaded(Image)` becomes `TextureStore::insert(guid, ImageData, TextureDesc { filter, address: Clamp, mips })` built from the registry's `ImageSettings`; `take_loaded(Font)` becomes `FontStore::insert_font`. **Requests are change-driven, never a per-frame scan:** `Query<&Sprite, Changed<Sprite>>` and `Query<&Text, Changed<Text>>` (an `Added` row counts as `Changed`, so a spawn is seen) feed a `Local<HashSet<Guid>>` of `Guid`s already requested; the UI part walks the `UiDrawList`'s image and font `Guid`s only when the UI tree's `paint_revision` is newer than the glue's last seen value (ui-mvp.md). A `Guid` that is not in a store and not yet requested is requested once. **Failures are retried by a separate, bounded rule**, because a change-driven scan never revisits an unchanged row: when a `Guid` reaches `Failed` with a transient error (`NotRegistered`, `NotFound`, `Io`, `Http`, `Network`), the glue records it in a `Local<HashMap<Guid, Retry { attempts: u8, due: f64 }>>` and calls `AssetServer::retry(guid)` when `Time` passes `due`; the delays are 1, 2, 4, 8 and 16 seconds (5 attempts), after which the `Guid` stays `Failed`, is logged once, and only an editor `retry` or a fresh change of the referencing component (which removes it from the `requested` set on the final failure) requests it again. A permanent error (`Decode`, `TooLarge`, `Unsupported`, `Utf8`, `BadPath`) is never retried automatically. The retry map is empty in the normal case, so the system costs one `is_empty` check per frame. After a `forget` the glue drops the `Guid` from its `requested` set, so a later change of a sprite that names it requests it again; nothing else does, which is intended (unloading is a deliberate act in the MVP). Cost is proportional to the rows that changed, and 20,000 unchanged sprites cost one filter check per archetype chunk (budget below). A `Failed` state logs once with the path. |
 | Asset to audio (FA2, `AudioGluePlugin`) | `Update`, after `ASSETS` | `take_loaded(Audio)` becomes `ClipStore::insert(guid, ClipData)`. In `First`, after `INPUT`: the autoplay unlock above. |
 | Scene loading (FA3, `ScenePlugin`) | `Update` | An event `LoadScene { path: String, mode: LoadMode (Replace or Additive), parent: Option<Entity> }` requests the `.scene` asset. When its `Scene` payload is taken, the glue parses and instantiates it with `resolve_asset` from the registry, requests `SceneInstance.asset_refs`, and sends `SceneLoaded { scene, path }` or `SceneLoadFailed { path, errors: String }` (reflected events). `Replace` calls `despawn_scene` for the active scene first. The glue lives in a facade `ScenePlugin`, which inserts `Scenes` and calls `scene::register_types` (D7: `exitium_scene` has no `Plugin`). |
+| Hot reload (FA5, in `AssetGluePlugin`, `AudioGluePlugin` and `ScenePlugin`) | `Update`, after `ASSETS` | Applies the rules of "Hot reload" to `generation >= 2` payloads: images and fonts replace the store entry (the old texture is released after the new one exists); a clip goes to `replace_clip`, and the music slot crossfades if it plays that clip; a `Scene` payload is dropped and `SceneFileChanged { path, scene }` is sent; a changed texture size relayouts the UI nodes that name the `Guid`. It also sets `HotReload.enabled` from `cfg!(debug_assertions)` and the `editor` feature when it builds `DefaultPlugins`. A failed reload is already reported by the assets plugin and the glue leaves the stores alone. Reload failures are **not** retried by the FA1 retry rule, because the asset is still `Ready`. |
 | Save to disk (#110, not facade) | editor | `write_scene` then `native::write_atomic` then `AssetRegistry::register` for a new file. The editor depends on all three crates, so #110 composes it; no facade code is needed. |
 
 ### CLI
@@ -535,14 +635,14 @@ Not needed: Node, npm, `trunk`, `wasm-pack`, a system `zip`, Python. `exitium_cl
 - `cargo xtask ci wasm` already builds every non-`NATIVE_ONLY` crate for wasm32, and `exitium_cli` is already `NATIVE_ONLY`. `exitium_assets`, `exitium_audio` and `exitium_scene` build for wasm32 and are covered.
 - The Linux runner image already has `libasound2-dev` (`ci/runner/linux/Dockerfile`), which kira's `cpal` needs on Linux. Audio tests use `AudioOutput::Null`, so no sound card is needed.
 - `wasm-bindgen-cli` is not on the runners. The export tests use a fake `wasm-bindgen` script and a fake `cargo` shim (a plan test: the CLI builds a list of commands and the test checks it), and the real web export is the Stage 4 rehearsal, run by hand on Windows. A real export test is `#[ignore]`d.
-- The `deny` job runs automatically on the new dependencies. It needs the `deny.toml` exception for `triple_buffer` (below). That is a hotspot file in intake 1, not a workflow.
+- The `deny` job runs automatically on the new dependencies. It needs the `deny.toml` exception for `triple_buffer` (below), which is a hotspot file in intake 1, not a workflow. The ADR behind it is AD1 (#137), a separate PR that merges first.
 - If the owner later wants a CI web-export smoke job, that is a change to `.github/workflows/ci.yml` (the owner pushes it) plus `cargo install wasm-bindgen-cli --version 0.2.130 --locked` in `ci/runner/linux/Dockerfile` (not a workflow, but the runner image must be rebuilt by the owner). It is not proposed for the MVP.
 - Intake should extend the xtask wasm step to `cargo build --examples --target wasm32-unknown-unknown` for `exitium_assets` and `exitium_audio` (as app-platform.md proposes for platform), so the two web examples are checked in CI. That is an `xtask/` edit, which intake holds.
 
 ### Threading
 
 - **Main thread.** Every public function of `exitium_assets`, `exitium_audio` and `exitium_scene` is called from the main thread, inside a system. ECS execution is single-threaded in the MVP.
-- **Assets, native.** Two worker threads (`exitium-assets-0`, `-1`) read and decode. They share the job queue, an atomic byte counter and the result channel with the main thread, and nothing else. They never touch the world, a registry or a consumer. The roadmap says the live-control server is the only extra thread (jam-mvp.md, Threading); that line did not count these workers or the audio device thread (cpal's). Both are listed here. Workers exit on drop. The web has no worker.
+- **Assets, native.** Two worker threads (`exitium-assets-0`, `-1`) read and decode. They share the job queue, an atomic byte counter and the result channel with the main thread, and nothing else. They never touch the world, a registry or a consumer. The roadmap says the live-control server is the only extra thread (jam-mvp.md, Threading); that line did not count these workers or the audio device thread (cpal's). Both are listed here. Workers exit on drop. The web has no worker. **Hot reload adds one more native thread**, `exitium-assets-watch`, only while `HotReload.enabled` is true (a debug build or the `editor` feature, never an exported game). It shares the `WatchSet` mutex and an `mpsc` channel with the main thread and nothing else ("Hot reload").
 - **Audio.** The device callback runs on the audio thread (native) or on the main thread from timers (web). The engine communicates with it through kira's lock-free command queues. Game code never blocks on audio.
 - **Scene.** Pure synchronous functions. Parsing may run on any thread (serial's `Syntax` is `Send + Sync`), but binding and instantiation need `&mut World`, so a scene load is a main-thread step.
 - **CLI.** A single thread. It spawns `cargo`, `wasm-bindgen` and `wasm-opt` as child processes and waits. `serve` uses one thread per connection.
@@ -551,25 +651,26 @@ Not needed: Node, npm, `trunk`, `wasm-pack`, a system `zip`, Python. `exitium_cl
 
 Per cross-spec rule C4, this section is the list of what the three runtime crates expose. #110 builds every tool and panel generically from reflection and commands. A capability is parity-complete when the editor action and the MCP tool call the same function.
 
-**Reflected surface.** `AssetKind`, `ImageFilter`, `ImageSettings`, `AssetInfo`, `Manifest`; resource `AssetStatus` (`manifest: ManifestState`, `requested`, `loading`, `ready`, `failed` counts, `failed_list: Vec<AssetFailure { guid, path, message }>`); events `AssetLoaded { guid, kind }`, `AssetFailed { guid, kind, message }`. `Name`, `SceneMember` (`derived`), `SceneId`, resource `Scenes`; events `LoadScene`, `SceneLoaded`, `SceneLoadFailed` (FA3). `AudioSettings`, `AudioStats`, `Bus`, events `PlayAudio`, `StopAllAudio`, `PlayMusic`, `StopMusic`. Inspector fields: `Name` (text), `ImageSettings` (enum and two checkboxes), `AudioSettings` (four sliders). Components that hold a `Guid` asset reference (`Sprite.image`, `Text.font`, UI images) show an **asset picker**: the field carries `custom(widget = "asset", kind = "image")` (or `"font"`), which render and UI add to their derives; the picker lists `asset_list` for that kind. **#110 builds the picker generically**: it reads the field's `custom("widget")` and `custom("kind")` from `TypeInfo`, shows the registered assets of that kind (with a thumbnail for images), and writes the chosen `Guid` through `SetField`; a field of type `Guid` without the widget stays a text box. The attribute is added by the issues RA1 (render) and UA1 (ui), see "Downstream adjustments".
+**Reflected surface.** `AssetKind`, `ImageFilter`, `ImageSettings`, `AssetInfo`, `Manifest`; resource `AssetStatus` (`manifest: ManifestState`, `requested`, `loading`, `ready`, `failed` counts, `failed_list: Vec<AssetFailure { guid, path, message }>`, and the hot reload fields of "Hot reload"); resource `AssetSettings` (`hot_reload`, `poll_interval_ms`); events `AssetChanged { guid, path }`, `AssetLoaded { guid, kind, generation }`, `AssetFailed { guid, kind, message, reload }`, `ReloadAssets { guid?, kind? }`, and `SceneFileChanged { path, scene }` (FA5). `Name`, `SceneMember` (`derived`), `SceneId`, resource `Scenes`; events `LoadScene`, `SceneLoaded`, `SceneLoadFailed` (FA3). `AudioSettings`, `AudioStats`, `Bus`, events `PlayAudio`, `StopAllAudio`, `PlayMusic`, `StopMusic`. Inspector fields: `Name` (text), `ImageSettings` (enum and two checkboxes), `AudioSettings` (four sliders). Components that hold a `Guid` asset reference (`Sprite.image`, `Text.font`, UI images) show an **asset picker**: the field carries `custom(widget = "asset", kind = "image")` (or `"font"`), which render and UI add to their derives; the picker lists `asset_list` for that kind. **The editor builds the picker generically** (ED10 in editor-mcp-mvp.md, which is `Blocked by` RA1 and UA1): it reads the field's `custom("widget")` and `custom("kind")` from `TypeInfo`, shows the registered assets of that kind (with a thumbnail for images), and writes the chosen `Guid` through `SetField`; a field of type `Guid` without the widget stays a text box. The attribute is added by the issues RA1 (render) and UA1 (ui), see "Downstream adjustments".
 
 **Commands and tools #110 builds.** Names follow `<domain>_<verb>`. "Undo" says what the bus records.
 
 | Capability | Plain Rust function (this spec) | Tool | Kind and undo |
 |---|---|---|---|
 | List assets with state, error, kind, settings, and optionally the unregistered files | `AssetRegistry::iter`, `AssetServer::state`, `native::scan` | `asset_list` (filters: kind, state, `include_unregistered`) | read |
-| One asset in detail (info, state, error, decoded size and duration, which scenes reference it) | `AssetRegistry::get`, `edit::find_references` | `asset_get` | read |
+| One asset in detail (info, state, error, generation, last reload error, decoded size and duration, which scenes reference it) | `AssetRegistry::get`, `edit::find_references` | `asset_get` | read |
 | Import a file (copy into `assets/`, or register in place when it is already inside), set kind and settings, downscale an image to `max_dimension` (default 4096) | `edit::import_asset` | `asset_import` | command. Undo removes the registration and deletes the copy it made. |
 | Register a file that is already under `assets/` | `edit::register_asset` | `asset_register` | command. Undo unregisters. |
 | Change image settings | `edit::set_image_settings` | `asset_set_settings` | command. Undo restores the old value. |
 | Rename or move (the `Guid` stays, so no scene changes) | `edit::rename_asset` | `asset_rename` | command. Undo renames back. |
 | Remove (the file goes to `<root>/.trash/`); the result lists the scenes that still reference the `Guid` | `edit::remove_asset`, `edit::find_references` | `asset_remove` | command. Undo moves the file back and re-registers. |
-| New, open (load), save, save as; list; validate text | `Scenes`, `write_scene`, `ParsedScene`, `validate_scene`, `despawn_scene` | `scene_new`, `scene_load` (`mode`, `parent`), `scene_save` (`path?`, `scope?`), `scene_list`, `scene_validate` (`text` or `path`) | `scene_load` and `scene_new` are commands: additive undo despawns the instance; replace keeps the previous scene's text and undo reloads it. `scene_save` writes a file, not the world, and has no undo; its result carries the `SceneWarning` list (unsaved components, out-of-scope parents), so an agent that forgot `#[reflect(Component)]` is told. `scene_list`, `scene_validate` are read-only. |
-| Create an entity for authoring | the generic spawn command of #110 plus `mark_member(world, entity, active_scene)` | the entity tools of #110 | command. **Must call `mark_member`**, or the entity is not saved. |
-| Play a sound or music, stop, set volume | events and the `AudioSettings` resource | `audio_play`, `audio_play_music`, `audio_stop`, `audio_set_volume`, `audio_status` | `audio_play`, `audio_stop` are runtime actions with no undo (the bus must let a command declare "no undo", as physics-2d.md already requires). `audio_set_volume` is a resource edit with undo. `audio_status` reads `AudioStats`. The generic `ecs_send_event`, `ecs_set_resource_field` and `ecs_get_resource` already cover all of it; the named tools exist for discovery. |
-| Create a project, export | the CLI (`exitium new`, `exitium export --json`, `--check`) | `project_new`, `project_export_check`, `project_export` (`target`, `out?`) | ops tools: start the `exitium` binary as a process and return its JSON (no `exitium_mcp` to `exitium_cli` edge, jam-mvp.md Stage 4). Export is long: the tool reports progress lines and the final JSON. No undo. |
+| New, open (load), save, save as; list; validate text | `Scenes`, `write_scene`, `ParsedScene`, `validate_scene`, `despawn_scene` | `scene_new`, `scene_load` (`mode`, `parent`), `scene_save` (`path?`, `scope?`), `scene_list`, `scene_validate` (`text` or `path`) | `scene_load` and `scene_new` are commands: additive undo despawns the instance; replace keeps the previous scene's text and undo reloads it. `scene_save` writes a file, not the world, and is `UndoKind::NotUndoable` (journal only); its result carries the `SceneWarning` list (unsaved components, out-of-scope parents), so an agent that forgot `#[reflect(Component)]` is told. `scene_list`, `scene_validate` are read-only. |
+| Create an entity for authoring | `mark_member(world, entity, active_scene)` | `ecs_spawn_entity` and the hierarchy's "Create entity" (editor-mcp-mvp.md) | command. The editor's **`SpawnHooks` entry calls `mark_member`** (and creates an "Untitled" scene when `Scenes.active` is `None`), or the entity is not saved. |
+| Play a sound or music, stop, set volume, read the stats | the events and resources of `AudioPlugin` | **No `audio_*` tool is built** (AM9). `ecs_send_event` with `PlayAudio`, `PlayMusic`, `StopMusic` or `StopAllAudio`; `ecs_set_resource_field` on `AudioSettings`; `ecs_get_resource` on `AudioStats` | The four events are `UndoKind::NotUndoable`: the audio actions are **journal-only** (recorded in the journal, not undone). The volume edit is `ecs_set_resource_field` on `AudioSettings`, an ordinary undoable resource edit, and it replaces the old `audio_set_volume`. The schema and `ecs_list_events` give an agent discovery, so the named tools were not needed. |
+| Reload assets, turn hot reload on or off | `AssetServer::{reload, reload_all}`, the `AssetSettings` resource | `ecs_send_event` with `ReloadAssets`; `ecs_set_resource_field` on `AssetSettings`; `ecs_get_resource` on `AssetStatus` | The event is `UndoKind::NotUndoable` and journalled. The setting is an undoable resource edit. No named tool (AM9's approach). |
+| Create a project, export | the CLI (`exitium new`, `exitium export --json`, `--check`) | `project_new`, `project_export_check`, `project_export` (`target`, `out?`) | **MCP ops tools only** (editor-mcp-mvp.md): they start the `exitium` binary as a process and return its JSON (no `exitium_mcp` to `exitium_cli` edge, jam-mvp.md Stage 4). Export is long: the tool reports progress lines and the final JSON. `UndoKind::NotUndoable`. |
 
-Parity on the editor side: an asset browser panel (list, import path field, settings inspector, rename, remove, a play button for audio), a scene menu (new, open, save, save as), an audio panel (the four sliders and stop all) and an Export menu that runs the same CLI. Each is a front end of the tools above.
+Parity on the editor side: an asset browser panel (list, import path field, settings inspector, rename, remove, a play button on audio assets that sends `PlayAudio`) and a scene menu (new, open, save, save as). **The audio panel is the generic Resources tab** (`AudioSettings` as four sliders, `AudioStats` read-only) **plus the play button and the toolbar's "Stop all audio"** (sends `StopAllAudio`). **There is no Export menu in the MVP.** Export and project creation are the three MCP ops tools above, and a human runs `exitium export` in a terminal. Each editor action is a front end of the tools above.
 
 ## Performance
 
@@ -590,6 +691,11 @@ All numbers are initial targets on the min-spec reference runner (4 cores, 8 GB)
 | Memory: server idle | <= 64 KB plus 120 B per registered asset |
 | Memory: peak per load | image: compressed bytes plus 1x decoded; audio: compressed bytes plus 2x decoded (one conversion) |
 | Web: concurrent fetches | at most `max_fetches` = 6 |
+| Hot reload, file write to new texture on screen (2048 x 2048 PNG, 250 ms poll, Windows) | <= 500 ms (roadmap). Worst case by parts: 250 ms poll + 120 ms decode + 5 ms upload + 17 ms frame = about 390 ms. Recorded by A10 and FA5, not CI-gated. |
+| Hot reload, watcher sweep, `exitium_assets/watch/sweep/500` and `/5000` | <= 5 ms and <= 50 ms on the watcher thread. The interval stretches to 8x the sweep, so the thread uses at most about 12% of one core. |
+| Hot reload, main thread | `poll` idle with hot reload on and nothing changed: <= 300 ns (the channel drain is inside it). One reload payload released: <= 3 µs. At most 2 reload payloads per frame, so with a texture create and upload of <= 5 ms (2048 x 2048, render's cost) no frame passes 20 ms. |
+| Manifest reload, 5,000 entries, one changed | <= 30 ms (read and bind 25 ms, diff 5 ms), `exitium_assets/manifest/reload_diff/5000` |
+| Audio `replace_clip`, 1 Mi frames, `exitium_audio/replace_clip/1m_frames` | <= 12 ms (the same conversion as `insert_clip`) |
 | Scene, 10,000 entities x 5 components (about 3 MB), `exitium_scene/parse/10000` read and bind | <= 100 ms (serial's budget) |
 | Scene `instantiate`, 10,000 entities x 5 components, `exitium_scene/instantiate/10000` | <= 50 ms (<= 5 µs per entity) |
 | Scene load, parse to instantiate | <= 150 ms native; <= 300 ms Chrome |
@@ -617,6 +723,7 @@ Complexity: scene parse and write are O(source bytes); instantiate is O(componen
 - **Audio.** With `AudioOutput::Null`: play and the voice limit; stop and `is_playing`; bus volumes (dB conversion, `0` is silence); music crossfade and "same clip is a no-op"; **locked behaviour**: SFX dropped and counted, music remembered and started by `unlock`; `Unavailable` makes every call a no-op; `remove_clip` stops its voices; sample-rate conversion is kira's, so a test only checks the frame count and duration; an invalid clip is an error. Examples are not tests.
 - **CLI.** `new`: file list and contents, name validation, overwrite refusal, the three engine-reference modes, and (toolchain present) `cargo check` and the wasm32 check of the output. `export`: the plan (command lists) with a fake `cargo`, `wasm-bindgen` and `wasm-opt` for both targets; a missing manifest file is reported in one list; the zip is deterministic and has `index.html` at the root; backslash paths never appear; the `wasm-bindgen` version check (equal, different, missing); `WASM_BINDGEN_VERSION` equals the workspace lock and the template; `--json` output is checked by a small test-only JSON validator; `serve` serves a file with the right MIME type and refuses non-loopback binds.
 - **Examples (manual, recorded in the PR).** Assets example on Windows and in Chrome: loads a PNG, WAV, OGG and font, prints states and decoded sizes, a failing file shows `Failed`. Audio example on Windows and in Chrome: a tone, a music loop with a crossfade, volume keys, and in Chrome nothing sounds until the first click.
+- **Hot reload.** With `MemorySource` (the test changes its bytes) and an injected clock: `reload` of a `Ready` asset delivers `generation` 2 and the state stays `Ready`; `reload` of `Unloaded` and `Failed` returns false; a failing reload keeps the state and generation, sets `last_reload_error`, counts in `AssetStats.reload_failures`, and the next good reload clears it; a change during `Loading` or a reload reloads once more and the last bytes win (three rapid changes: at most one job running and one queued, the final bytes delivered); an undelivered reload payload is replaced by a newer one; `max_reload_deliveries` caps reload payloads per frame while first loads are unlimited; `take_loaded_guid` takes one `Guid` and leaves the rest. Watcher, on a temp directory: a changed file is reported once; a rewrite with the same stamp is not; write-temp-then-rename is reported once and a 1 to 3 tick absence is silent, a 4 tick absence gives one `Missing`; the interval stretches when the sweep is slow; `forget` and a manifest removal stop watching; turning the flag off joins the thread; nothing is spawned while it is off. Manifest reload: add, rename (keeps the `Guid`, reloads), image-settings change (reloads), removal (consumer copy stays), a bad file keeps the registry and sets the error, and the editor's own save is an empty diff. Plugin, headless app: a changed `MemorySource` file gives `AssetChanged` then `AssetLoaded { generation: 2 }`; `ReloadAssets` with `guid`, `kind` and neither. Audio, `Null` output: a voice playing during `replace_clip` keeps a non-zero peak, a new `play` uses the new frames, and the music slot crossfades. Facade (FA5), the roadmap's Stage 2 test: a PNG rewritten on disk changes `TextureStore::size`; a bad PNG keeps the old texture and sends `AssetFailed { reload: true }`; a changed `.scene` sends `SceneFileChanged` and leaves the world unchanged. Example (A10), by hand on Windows: edit a PNG, a WAV and a font and see or hear each change; in Chrome: the watcher reports `Unavailable` and a key press calls `reload`.
 - **Platform.** `cargo build --workspace --target wasm32-unknown-unknown` passes for the three runtime crates; `--no-default-features` builds of assets and audio pass (Stage 1 shape).
 
 ## Dependencies
@@ -641,11 +748,24 @@ Dev-dependencies: `criterion` (workspace) for assets, audio and scene. `exitium_
 
 External tools (not Cargo dependencies): `wasm-bindgen-cli` 0.2.130 and optional `wasm-opt`, see "Export tools".
 
+**Hot reload adds no crates.io dependency.** The watcher uses `std::fs::metadata`, `std::thread`, `std::sync::mpsc` and `std::time`. The roadmap's dependency list (SP4 decides "`notify` or polling with std") is answered: **polling with std** (D11). `notify` was checked and not adopted:
+
+| Crate | Version | Licence | wasm32 | Why not |
+|---|---|---|---|---|
+| `notify` | 9.0.0 (crates.io, 2026-11-24) | CC0-1.0, which `deny.toml` already allows, so it needs no licence decision | no. Its backends are `inotify`, `kqueue`, FSEvents and `windows-sys`, and it has none for the web, so it would sit behind `cfg(not(target_arch = "wasm32"))`. | It would bring `windows-sys`, `walkdir`, `mio`, `bitflags`, `log`, `notify-types` and `xxhash-rust` into the tree to save about 250 ms on a path that already fits its 500 ms budget (390 ms worst case). A recursive watch of `assets/` also reports every editor temp file, so it would still need the loaded-asset filter. Only Windows and Chrome are tested targets. |
+
+If detection latency ever becomes a complaint, `notify` replaces the body of `watch.rs` and nothing else: the `WatchSet`, the channel and the rest of "Hot reload" stay. That is open question 13. The CLI, `exitium_audio` and `exitium_scene` need no new dependency for this amendment either.
+
 ### Licence decision (owner, decided)
 
 `kira` depends on **`triple_buffer` 9.0.1, licensed MPL-2.0** (not optional; it is in the tree for every kira feature set). `cargo deny` as configured in `deny.toml` would fail on it, and ADR-0003 says "copyleft stays banned". A check of the full scratch tree with `cargo metadata` against the `deny.toml` allow list found exactly this one non-permissive licence (`symphonia` and its codecs, also MPL-2.0, are avoided by the feature choice above). MPL-2.0 is file-level weak copyleft: linking it into an MIT program is permitted; the obligation is to keep the MPL-covered source files available and to publish changes to them. We do not modify the crate and it is available on crates.io.
 
-**Decision (owner):** allow a narrow exception for `triple_buffer` only: MPL-2.0, unmodified, used through kira. It lands in the **intake 1 PR** as (a) a `[[licenses.exceptions]]` entry in `deny.toml` with `crate = "triple_buffer"` and `allow = ["MPL-2.0"]`, which allows no other crate and no other licence, and (b) a new ADR in `docs/decisions/` that records why and amends ADR-0003's "copyleft stays banned" for this one crate. The ADR states the conditions: the crate stays unmodified, it is reached only through kira, a second MPL-2.0 (or other copyleft) dependency needs its own decision, and shipped games carry a licence notice (open question 2). **Alternative considered:** drop kira and write a small mixer on `cpal` (Apache-2.0, about 400 lines); rejected because it costs code the engine would have to maintain, and `exitium_audio`'s API exposes no kira type, so it stays possible later.
+**Decision (owner):** allow a narrow exception for `triple_buffer` only: MPL-2.0, unmodified, used through kira. It lands in two separate PRs, in this order (`mvp-roadmap.md`, Stage 0 group A):
+
+- **(a) AD1 (#137), its own PR:** a new ADR in `docs/decisions/` that records why and amends ADR-0003's "copyleft stays banned" for this one crate. AD1 holds `docs/decisions/` (R2) and merges before intake 1.
+- **(b) Intake 1 (#156), the `deny.toml` entry only:** a `[[licenses.exceptions]]` entry with `crate = "triple_buffer"` and `allow = ["MPL-2.0"]`, which allows no other crate and no other licence. Intake 1 writes no ADR and does not hold `docs/decisions/`. It is `Blocked by` AD1, so the entry never lands without its record.
+
+The ADR (AD1) states the conditions: the crate stays unmodified, it is reached only through kira, a second MPL-2.0 (or other copyleft) dependency needs its own decision, and shipped games carry a licence notice (open question 2). **Alternative considered:** drop kira and write a small mixer on `cpal` (Apache-2.0, about 400 lines); rejected because it costs code the engine would have to maintain, and `exitium_audio`'s API exposes no kira type, so it stays possible later.
 
 ## Wiring for the intake PRs
 
@@ -657,10 +777,10 @@ Everything the implementation issues need from `Cargo.toml`, `Cargo.lock`, `deny
 - `[workspace.dependencies]` (each with a one-line comment: licence, wasm, why not std): `kira`, `png`, `hound`, `lewton`, `ttf-parser`, `wasm-bindgen-futures`, `js-sys` (from the table). `web-sys` and `wasm-bindgen` entries already come from app-platform.md.
 - `crates/exitium_assets/Cargo.toml`: `[dependencies] exitium_core, png, hound, lewton, ttf-parser`; `[target.'cfg(target_arch = "wasm32")'.dependencies] wasm-bindgen, wasm-bindgen-futures, js-sys, web-sys (features Window, Response, Request, RequestInit, RequestMode, Headers), web-time`; `[dev-dependencies] criterion, and on wasm32 web-sys (feature console)`; `[[bench]]` stanzas are added by the first issue that adds a benchmark. `web-time` is the workspace entry (1.1.0) the app-platform spec declares.
 - `crates/exitium_audio/Cargo.toml`: `[dependencies] exitium_core, kira`; `[dev-dependencies] criterion`; `[target.'cfg(target_arch = "wasm32")'.dev-dependencies] wasm-bindgen, web-sys (features Window, Document, Event, EventTarget, console)`. The audio example does not use `exitium_platform` (C1); on Windows it needs no window.
-- `deny.toml`: the `triple_buffer`-only `[[licenses.exceptions]]` entry ("Licence decision"). Intake runs `cargo deny check` and records the result.
+- `deny.toml`: the `triple_buffer`-only `[[licenses.exceptions]]` entry ("Licence decision"). Intake runs `cargo deny check` and records the result. **Intake 1 writes no ADR:** the ADR is AD1 (#137), its own PR, and intake 1 is `Blocked by` it.
 - `xtask`: the wasm step also builds `--examples` for `exitium_assets` and `exitium_audio` (proposed, optional).
-- `docs/decisions/`: the new ADR for the licence exception ("Licence decision"), numbered at filing.
-- **Intake 1's `## Footprint` lists `Hotspots: Cargo.toml, Cargo.lock, deny.toml, docs/decisions/`.** jam-mvp.md's intake 1 block names the first three; this spec adds `docs/decisions/`, so the ADR number cannot collide with another PR. Both are held by intake 1 because it carries the exception and its ADR.
+- **Intake 1's `## Footprint` lists `Hotspots: Cargo.toml, Cargo.lock, deny.toml`.** It does not list `docs/decisions/`; AD1 holds that directory.
+- **Hot reload changes no wiring.** It adds no crate edge, no crates.io dependency and no `Cargo.lock`, `deny.toml`, `xtask` or `NATIVE_ONLY` entry (D11, "Dependencies"). `watch.rs` is gated by `cfg(not(target_arch = "wasm32"))` inside `exitium_assets`, and the existing wasm step and the `--no-default-features` check cover it. The new reflected types (`AssetSettings`, `AssetChanged`, `ReloadAssets`, `SceneFileChanged` in the facade) use edges that are already listed.
 
 **Intake 2 (Stage 2 to 4).**
 
@@ -689,10 +809,11 @@ Everything the implementation issues need from `Cargo.toml`, `Cargo.lock`, `deny
 10. **Asset root layout for big games.** One flat manifest of 5,000 entries is fine for the MVP. A pack file (fewer web requests, one cache entry) and per-folder manifests are later work; the manifest is the only index, so a pack can sit behind `AssetSource`.
 11. **Default font.** Still render-v1.md open question 7. The export copies assets only, so a game that needs a font imports one.
 12. **`wasm-opt` flags** and itch.io's current file-count and size limits are verified by the implementer on a real export, not assumed here.
+13. **Faster change detection, and a web dev loop.** Polling detects a change within 250 ms and meets the 500 ms budget. If that feels slow, `notify` replaces the body of `watch.rs` ("Dependencies"). A live reload on the web needs a dev server that pushes changes (a websocket in `exitium serve`) and a listener in the page; it is not needed for the MVP, and `reload` already gives the web build the engine half. Recommendation: wait for a real complaint.
 
 ## Implementation issues
 
-Each issue below is PR-sized (about 600 changed lines or fewer), edits exactly one crate (the facade issues edit none and hold the `crates/exitium/` hotspot), has a labelled Footprint, acceptance criteria and `Blocked by` lines, and goes into the Jam MVP milestone. The architect files them with `file-issue` after this spec merges, labels `area:assets`, `area:audio`, `area:scene`, `area:cli` and `area:facade`, and `area:render` for RA1 and `area:ui` for UA1. `<intake-1>` and `<intake-2>` are the intake issues' numbers, filled in at filing. Stage 1 issues are `Blocked by <intake-1>` and Stage 2 to 4 issues by `<intake-2>` (C6). One crate has at most one issue in flight, so each lane runs in the order shown.
+Each issue below is PR-sized (about 600 changed lines or fewer), edits exactly one crate (the facade issues edit none and hold the `crates/exitium/` hotspot), has a labelled Footprint, acceptance criteria and `Blocked by` lines, and goes into the MVP milestone. The architect files them with `file-issue` after this spec merges, labels `area:assets`, `area:audio`, `area:scene`, `area:cli` and `area:facade`, and `area:render` for RA1 and `area:ui` for UA1. `<intake-1>` and `<intake-2>` are the intake issues' numbers, filled in at filing. Stage 1 issues are `Blocked by <intake-1>` and Stage 2 to 4 issues by `<intake-2>` (C6). One crate has at most one issue in flight, so each lane runs in the order shown.
 
 Every issue states its Footprint in the full labelled form (`Edits`, `Governs`, `Hotspots`, `New crate edges`), and at filing it becomes the `## Footprint` block of the `factory-run` skill, line for line. Lane headings repeat the form for the lane. The facade issues carry `Edits: none` and `Hotspots: crates/exitium/` (their manifest edges come from intake 2). Each issue updates its crate's `CLAUDE.md` (A1, AU1, SC1 and C1 create them), adds the benchmarks it names, and states the high-risk areas it touches in the PR Risk section.
 
@@ -751,6 +872,28 @@ Every issue states its Footprint in the full labelled form (`Edits`, `Governs`, 
   - [ ] The PR body records a run on Windows and in Chrome, including the failed file.
   - [ ] `cargo build --example assets_demo` and the same with `--target wasm32-unknown-unknown` pass. The example uses no other runtime crate (C1).
 
+**A8. `feat(assets): reload API, generation and last-write-wins`** (about 450 lines). Blocked by `<intake-1>`, A7.
+- Footprint: Edits `crates/exitium_assets/`; Governs none; Hotspots none; New crate edges none.
+- Adds `AssetServer::{reload, reload_all, generation, last_reload_error, take_loaded_guid}`, `Loaded.generation`, the dirty-again rule, coalescing of undelivered reload payloads, `max_reload_deliveries`, reload stats, `AssetKind` as `#[non_exhaustive]`, and the web `reload` (`fetch` with `cache: "reload"`).
+- Acceptance criteria:
+  - [ ] The server half of the "Hot reload" test group with `MemorySource`: generation, state stays `Ready`, failed reload keeps the value, last write wins, coalescing, the per-frame cap, `take_loaded_guid`.
+  - [ ] `poll` idle stays within 300 ns; one reload payload released within 3 µs; the server is still `Send + Sync`.
+  - [ ] The wasm32 build passes, with `reload` compiled on both targets and pure-logic tests of the dirty-again and coalescing rules running on the host.
+
+**A9. `feat(assets): the polling watcher (hot reload, native only)`** (about 450 lines). Blocked by `<intake-1>`, A8.
+- Footprint: Edits `crates/exitium_assets/`; Governs none; Hotspots none; New crate edges none.
+- Adds `watch.rs` (not wasm32): `HotReload`, `HotReloadState`, `WatchSet`, `Stamp`, the thread, the stretching interval, the missing-file rule, the channel drained by `poll`; `exitium_assets/watch/sweep/*` benchmarks. Adds **no dependency**.
+- Acceptance criteria:
+  - [ ] The watcher half of the "Hot reload" test group on a temp directory, including write-then-rename, the absence counts, the stretching interval (injected clock), `forget`, and joining the thread; nothing is spawned while disabled.
+  - [ ] `watch/sweep/500` and `/5000` meet the budget. The module is gated out of the wasm32 build, which still passes, and `Cargo.toml` gains no dependency.
+
+**A10. `feat(assets): hot_reload_demo example for Windows and Chrome`** (about 250 lines). Blocked by `<intake-1>`, A9.
+- Footprint: Edits `crates/exitium_assets/`; Governs none; Hotspots none; New crate edges none.
+- Adds `examples/hot_reload_demo.rs` and its web page: loads a PNG, a WAV and a font with `hot_reload` on, prints each change with its generation and the time from the file write to the delivered payload; a corrupt save prints the failed reload and keeps the old value. On the web it prints `Unavailable` and a key press calls `reload`.
+- Acceptance criteria:
+  - [ ] The PR body records a run on Windows (edit a PNG, a WAV and a font, then save a corrupt PNG) and in Chrome (`Unavailable`, then a manual reload), with the measured write-to-payload time.
+  - [ ] Both example builds pass. The example uses no other runtime crate (C1). This ends the Stage 1 assets lane.
+
 ### Stage 2: assets lane (feature `manifest` and `plugin`)
 
 **AP1. `feat(assets): the manifest on reflection and the text format`** (about 450 lines). Blocked by `<intake-2>`, A7.
@@ -774,9 +917,17 @@ Every issue states its Footprint in the full labelled form (`Edits`, `Governs`, 
   - [ ] The "Edit API" test group, including every undo and the downscale at import.
   - [ ] `find_references` reads only `Scene` and `Text` assets and is bounded by `max_text_bytes`.
 
+**AP4. `feat(assets): hot reload in the plugin (settings, events, manifest reload)`** (about 450 lines). Blocked by `<intake-2>`, AP3, A10.
+- Footprint: Edits `crates/exitium_assets/`; Governs none; Hotspots none; New crate edges none.
+- Adds to `plugin/`: the reflected `AssetSettings`, the new `AssetStatus` fields, events `AssetChanged`, `ReloadAssets` and the changed `AssetLoaded` and `AssetFailed`; the systems `apply_asset_settings` and `reload_assets`; the manifest reload (read, validate, diff, keep the old registry on error); `exitium_assets/manifest/reload_diff/*` benchmark.
+- Acceptance criteria:
+  - [ ] The plugin, headless-app and manifest-reload halves of the "Hot reload" test group; a changed manifest and a changed asset each produce the documented events and status.
+  - [ ] The reflected types register and round-trip through the text format. `HotReloadState` is `Unavailable` and the flag stays false on wasm32; the wasm32 build and the `--no-default-features` build pass.
+  - [ ] `reload_diff/5000` meets the budget; no `unsafe`.
+
 ### Stage 1: audio lane (`exitium_audio`, Footprint: Edits `crates/exitium_audio/`; Governs none; Hotspots none; New crate edges none)
 
-**AU1. `feat(audio): clips, buses and the AudioEngine over kira`** (about 550 lines). Blocked by `<intake-1>` (which carries the `triple_buffer` exception and its ADR).
+**AU1. `feat(audio): clips, buses and the AudioEngine over kira`** (about 550 lines). Blocked by `<intake-1>` (which carries the `triple_buffer` `deny.toml` entry; its ADR is AD1, #137, merged earlier).
 - Footprint: Edits `crates/exitium_audio/`; Governs none; Hotspots none; New crate edges none.
 - Adds `clip.rs`, `engine.rs`: `ClipData`, `insert_clip`, buses, `play`, `stop`, voice limit, state and `Unavailable`, `AudioOutput::Null` and `advance_null`; creates `CLAUDE.md`.
 - Acceptance criteria:
@@ -806,6 +957,13 @@ Every issue states its Footprint in the full labelled form (`Edits`, `Governs`, 
 - Acceptance criteria:
   - [ ] A headless-app test (`AudioOutput::Null`) plays through each event, changes a volume through `AudioSettings`, and reads `AudioStats`; the reflected types round-trip through the text format (`exitium_serial` is a dev-dependency of this crate, added by intake 2).
   - [ ] `--no-default-features` builds the Stage 1 shape.
+
+**AUP2. `feat(audio): replace_clip for hot reload`** (about 250 lines). Blocked by `<intake-2>`, AUP1.
+- Footprint: Edits `crates/exitium_audio/`; Governs none; Hotspots none; New crate edges none.
+- Adds `AudioEngine::replace_clip` and the `ClipStore::insert` replace rule; a music-slot crossfade when the playing clip is replaced; the `replace_clip/1m_frames` benchmark.
+- Acceptance criteria:
+  - [ ] With `AudioOutput::Null`: a voice playing during `replace_clip` keeps a non-zero `advance_null` peak until it ends, a new `play` uses the new frames, the `ClipId` is unchanged, an invalid clip is an error that leaves the old clip, and the music slot crossfades over its `crossfade`.
+  - [ ] `replace_clip/1m_frames` meets the budget; no kira type is public; the wasm32 build passes.
 
 ### Stage 2: scene lane (`exitium_scene`, Footprint: Edits `crates/exitium_scene/`; Governs none; Hotspots none; New crate edges none)
 
@@ -848,11 +1006,11 @@ The scene crate does not depend on `exitium_app`, so SC1 may start right after i
 - Adds `validate_scene`, `ValidationReport`, the 10,000-entity round trip, the benchmarks.
 - Acceptance criteria:
   - [ ] `validate_scene` leaves no trace in the live world and reports the same errors as `instantiate`.
-  - [ ] A 50,000-entity round trip (write, read, instantiate, write) stays under 2 s in CI (the 1M-entity case is cut from the MVP); `parse`, `instantiate`, `write` and `validate` benchmarks meet the budgets.
+  - [ ] A 50,000-entity round trip (write, read, instantiate, write) stays under 2 s in CI (the 1M-entity case is #67, a Stage 5 facade test, because it needs ECS, tasks, profiler, scene and save together: roadmap C7); `parse`, `instantiate`, `write` and `validate` benchmarks meet the budgets.
 
 ### Stage 2: facade glue (Footprint: Edits none; Governs none; Hotspots `crates/exitium/`; New crate edges none)
 
-These four run alone, one after another, and after the plugin lanes they glue (R2, R3). Their order relative to the other specs' facade issues (app-platform.md F1 to F3, render-v1.md G1 and I18, ui-mvp.md, physics) is the orchestrator's; the `Blocked by` lines below are only what each glue needs.
+These five run alone, one after another (FA1, FA2, FA3, FA5, then FA4, which only re-exports), and after the plugin lanes they glue (R2, R3). Their order relative to the other specs' facade issues (app-platform.md F1 to F3, render-v1.md G1 and I18, ui-mvp.md, physics) is the orchestrator's; the `Blocked by` lines below are only what each glue needs.
 
 **FA1. `feat(exitium): asset feeding glue for render and UI`** (about 350 lines; this is render-v1.md's G1b, filed once). Blocked by `<intake-2>`, AP2, render-v1.md I16 (`TextureStore`, `FontStore`) and I18, and ui-mvp.md U11 (`UiPlugin`, the `UiTree` resource and `paint_revision`).
 - Footprint: Edits none; Governs none; Hotspots `crates/exitium/`; New crate edges none.
@@ -872,12 +1030,20 @@ These four run alone, one after another, and after the plugin lanes they glue (R
 - Acceptance criteria:
   - [ ] `LoadScene` additive and replace; asset references of the scene are requested; `SceneLoaded` and `SceneLoadFailed` events; the real `Transform2d`, `Sprite` and `Camera2d` round-trip through a scene in a headless app (the test C1 puts in the facade).
 
-**FA4. `feat(exitium): re-export the assets, audio and scene APIs`** (about 200 lines; high-risk review: facade API). Blocked by `<intake-2>`, FA3.
+**FA5. `feat(exitium): hot reload glue (textures, fonts, clips, UI sizes, scene notice)`** (about 450 lines). Blocked by `<intake-2>`, AP4, AUP2, FA1, FA2, FA3, render I16 (replace semantics for `TextureStore::insert` and `FontStore::insert_font`, "Downstream adjustments") and ui-mvp.md U11 (`UiTree`).
+- Footprint: Edits none; Governs none; Hotspots `crates/exitium/`; New crate edges none.
+- Adds the "Hot reload" glue row: the replace-on-reload paths for images, fonts and clips, the music crossfade call, the `SceneFileChanged` event (reflected, registered by `ScenePlugin`), the UI relayout when a texture size changed, and the `HotReload.enabled` default for `DefaultPlugins` (debug builds and the `editor` feature).
+- Acceptance criteria:
+  - [ ] The facade tests of the "Hot reload" test group: a PNG rewritten on disk changes `TextureStore::size` (the roadmap's Stage 2 test); a corrupt PNG keeps the old texture and sends `AssetFailed { reload: true }`; a rewritten WAV reaches `replace_clip` and the music slot crossfades; a rewritten `.scene` sends `SceneFileChanged` and leaves the world unchanged.
+  - [ ] A texture whose size changed marks the UI nodes that use it for layout once; an unchanged size does not. A reload failure is never retried by the FA1 rule.
+  - [ ] A release build without `editor` has `HotReload.enabled == false` and spawns no watcher thread (a test with the flag forced). No frame in the test passes 20 ms with 2 reloads per frame.
+
+**FA4. `feat(exitium): re-export the assets, audio and scene APIs`** (about 200 lines; high-risk review: facade API). Blocked by `<intake-2>`, FA5.
 - Footprint: Edits none; Governs none; Hotspots `crates/exitium/`; New crate edges none.
 - Adds three modules and **this complete list** (a compile test names every item; each is one `pub use`):
-  - `exitium::assets`: `AssetPath`, `AssetKind`, `AssetError`, `AssetInfo`, `ImageFilter`, `ImageSettings`, `AssetRegistry`, `AssetConfig`, `AssetLimits`, `AssetServer`, `AssetState`, `AssetStats`, `Payload`, `DecodedImage`, `DecodedAudio`, `Loaded`, `Manifest`, `ManifestState`, `AssetPlugin`, `AssetStatus`, `AssetFailure`, `AssetLoaded`, `AssetFailed`, `AssetGluePlugin`, the set `sets::ASSETS`, and the decoders as `decode::{decode_png, encode_png, decode_wav, decode_ogg, validate_font, decode_text}`.
+  - `exitium::assets`: `AssetPath`, `AssetKind`, `AssetError`, `AssetInfo`, `ImageFilter`, `ImageSettings`, `AssetRegistry`, `AssetConfig`, `AssetLimits`, `AssetServer`, `AssetState`, `AssetStats`, `Payload`, `DecodedImage`, `DecodedAudio`, `Loaded`, `Manifest`, `ManifestState`, `HotReload`, `HotReloadState`, `AssetPlugin`, `AssetStatus`, `AssetSettings`, `AssetFailure`, `AssetChanged`, `AssetLoaded`, `AssetFailed`, `ReloadAssets`, `AssetGluePlugin`, the set `sets::ASSETS`, and the decoders as `decode::{decode_png, encode_png, decode_wav, decode_ogg, validate_font, decode_text}`.
   - `exitium::audio`: `AudioEngine`, `AudioConfig`, `AudioOutput`, `AudioState`, `AudioError`, `AudioStats`, `Bus`, `ClipData`, `ClipId`, `Voice`, `PlayOptions`, `MusicOptions`, `AudioPlugin`, `Audio`, `ClipStore`, `AudioSettings`, `PlayAudio`, `StopAllAudio`, `PlayMusic`, `StopMusic`, `AudioGluePlugin`.
-  - `exitium::scene`: `Name`, `SceneId`, `SceneMember`, `SceneInfo`, `Scenes`, `ParsedScene`, `InstantiateOptions`, `SceneInstance`, `SaveScope`, `SaveOptions`, `SavedScene`, `SceneWarning`, `SceneErrors`, `SceneError`, `SceneErrorKind`, `ValidationReport`, `write_scene`, `validate_scene`, `despawn_scene`, `mark_member`, `register_types`, and the facade-defined `ScenePlugin`, `LoadScene`, `LoadMode`, `SceneLoaded`, `SceneLoadFailed` and the constant `INTERNAL_COMPONENTS`.
+  - `exitium::scene`: `Name`, `SceneId`, `SceneMember`, `SceneInfo`, `Scenes`, `ParsedScene`, `InstantiateOptions`, `SceneInstance`, `SaveScope`, `SaveOptions`, `SavedScene`, `SceneWarning`, `SceneErrors`, `SceneError`, `SceneErrorKind`, `ValidationReport`, `write_scene`, `validate_scene`, `despawn_scene`, `mark_member`, `register_types`, and the facade-defined `ScenePlugin`, `LoadScene`, `LoadMode`, `SceneLoaded`, `SceneLoadFailed`, `SceneFileChanged` and the constant `INTERNAL_COMPONENTS`.
   - **Kept private** (not re-exported; the editor and tools depend on the crates directly): `exitium_assets::{source (AssetSource, FsSource, MemorySource), native, edit, web}`, the scene crate's `label` and `SceneRefs`, the parser internals, and every kira type and backend of `exitium_audio` (there is none in its public API).
   - Adds `AssetPlugin`, `AssetGluePlugin`, `AudioPlugin`, `AudioGluePlugin` and `ScenePlugin` to `DefaultPlugins`.
 - Acceptance criteria:
@@ -939,11 +1105,15 @@ Applied by the architect when this spec merges (the bullets are the contract):
 - **reflect-model.md open question 13 and render-v1.md open question 1:** resolved by D1 (`Guid` fields, no `AssetRef<T>` in the MVP). **render-v1.md open question 5:** resolved by edge bleed in the decoder. **render-v1.md D3's "the importer downscales":** import downscales (default 4096); the decoder refuses over 8192 with the same hint.
 - **app-platform.md open question 3 (derived components):** resolved. The scene skips `custom(derived = true)`, `SceneMember`, `Parent` and `Children` as described under "Skipped on save".
 - **ui-mvp.md open question 8 (UI persistence):** a UI tree is a `.ui` `Text` asset holding a `UiNodeDesc` in the text form; the UI plugin parses it. Scenes carry no UI nodes.
-- **jam-mvp.md:** its known-wiring line "scene -> core, ecs, reflect, serial, app" is refined to drop `app` (D7), so the scene lane may start right after intake 2. Its Stage 2 count (scene about 2 PRs, plugins about 8) is replaced by this spec's list: assets 3, audio 1, scene 5, facade 4 in Stage 2, plus RA1 in render and UA1 in ui; the scene lane (5) is the longest and runs beside the spine, so the Stage 2 critical path is unchanged. The roadmap's "known" Stage 1 counts for assets and audio become 7 and 3.
-- **#110 (command bus, editor, MCP):** implements the tools and panels in "MCP / editor surface", including the generic asset-picker inspector widget keyed on `custom("widget") == "asset"` and `custom("kind")`, must call `mark_member` from its spawn command, must let a command declare "no undo", and starts the `exitium` binary for the three ops tools. Its export tool is blocked by C3 and C4.
+- **jam-mvp.md:** its known-wiring line "scene -> core, ecs, reflect, serial, app" is refined to drop `app` (D7), so the scene lane may start right after intake 2. Its Stage 2 count (scene about 2 PRs, plugins about 8) is replaced by this spec's list: assets 4 (AP1 to AP4), audio 2 (AUP1, AUP2), scene 5, facade 5 in Stage 2, plus RA1 in render and UA1 in ui; the scene lane (5) is the longest and runs beside the spine, so the Stage 2 critical path is unchanged. The roadmap's Stage 1 counts for assets and audio become 10 (A1 to A7 and the hot reload issues A8 to A10) and 3; its "about 9" for assets is therefore 10.
+- **The editor and MCP (#110, as split by `editor-mcp-mvp.md`):** implements the tools and panels in "MCP / editor surface", including the generic asset-picker inspector widget keyed on `custom("widget") == "asset"` and `custom("kind")` (ED10, `Blocked by` RA1 and UA1). Its spawn path registers a `SpawnHooks` entry that calls `mark_member`. "No undo" is `UndoKind::NotUndoable`, which `exitium_command` already declares. It builds **no `audio_*` tool and no Export menu** (AM9); the three ops tools start the `exitium` binary, and `project_export` is blocked by C3 and C4. Audio and hot reload are driven by `ecs_send_event`, `ecs_set_resource_field` and `ecs_get_resource` on the types in "Hot reload" and "Audio".
+- **render-v1.md I16 and SP5 (`render-v1.md` amendment):** `TextureStore::insert` and `FontStore::insert_font` **replace** the entry of an existing `Guid` (the new texture is created first and the old one is released once no frame in flight uses it), and I16's tests cover it. FA5 depends on this. This spec does not edit `render-v1.md`; SP5's amendment records the rule.
+- **ui-mvp.md and SP6:** a changed image size relayouts the nodes that name the `Guid`, through the UI's existing invalidation call. SP6 records the name of the call that FA5 uses, and `.ui` markup reload is its own (budget 100 ms).
+- **SP10 (`data-assets-prefabs.md`, #146), SP9, SP12:** a data asset, a script or a user shader adds an `AssetKind` variant and takes its payloads with `take_loaded_guid`. Each follows the two rules in "Hot reload". SP10 owns the variant-to-base dependency reload, and prefab variants are designed there, not here. SP10 and SP12 are ordered after this spec (same crates, R1).
 - **#41 (archetypes and `World`):** `Bundle` is implemented for tuples of arity 0 to 8, and `()` is the empty bundle, so `world.spawn(())` creates an entity in the empty archetype (scene `instantiate` relies on it). One impl and one test.
 - **reflect derive:** `SceneMember` and `GlobalTransform2d` rely on a type-level `custom(derived = true)` attribute, which app-platform.md open question 3 already asks the derive to allow.
 - **render-v1.md I14 is not changed** (it is already about 600 lines). The `#[reflect(default)]` and `custom(widget)` work on `Sprite`, `Camera2d` and `Text` is the separate issue RA1 below, which edits `exitium_render` after I14 has created the types. G1b is FA1 of this spec: one issue, with `Blocked by` extended by ui-mvp.md U11. RA1 sets the defaults the spec's field comments already state (anchor (0.5, 0.5), tint white, `mask` 1, `visible` true, `layers` 1, `zoom` 1.0, `viewport` (0,0)-(1,1), `scaling` `PixelsPerUnit(1.0)`, `active` true, `align` Left, `wrap` None) and the zero, false or `None` value otherwise, so a hand-written scene may omit them, and adds `custom(widget = "asset", kind = "image")` to `Sprite.image` and `kind = "font"` to `Text.font`.
 - **ui-mvp.md U12 is not changed.** The same attribute on the `Guid` fields of image and font data (`ImageData.image`, the `font` fields) is the separate issue UA1 below.
 - **#49 (hierarchy):** optionally marks `Children` with `custom(derived = true)`; until then the scene's name list covers it.
-- **intake 1 and intake 2:** add the lists in "Wiring for the intake PRs", including the `ENGINE_CRATES` edit and the licence decision.
+- **intake 1 and intake 2:** add the lists in "Wiring for the intake PRs", including the `ENGINE_CRATES` edit. Intake 1 carries only the `deny.toml` entry of the licence decision; its ADR is AD1 (#137), merged before it. Hot reload adds nothing to either intake.
+- **mvp-roadmap.md:** the "Dependency candidates" row for `notify` is answered here: polling with std, no dependency (D11). The roadmap's lane table counts for assets (10, not about 9) and audio (3 in Stage 1, 2 in Stage 2) follow this spec.

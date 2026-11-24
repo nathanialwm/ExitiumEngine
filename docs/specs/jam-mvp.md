@@ -2,7 +2,7 @@
 
 - Issue: #112
 - Crates: none. This is a roadmap spec: it governs no crate and edits no code. It sequences work across every runtime crate, `exitium_command`, `exitium_editor`, `exitium_mcp`, `exitium_cli` and the `exitium` facade.
-- Status: draft. Owner-approved (2026-11-18): the contract, the stage list with its exit criteria and lane order, and the cuts the contract names. Everything labelled **proposed** is the author's and has not been approved. The "cross-spec rules" are orchestrator rulings, not owner decisions.
+- Status: **superseded** by [mvp-roadmap.md](mvp-roadmap.md) (#129, 2026-11-24). Was: draft, owner-approved 2026-11-18. Kept as the record of the Jam plan and rules C1 to C6; where the two disagree, mvp-roadmap.md wins.
 
 ## Goal
 

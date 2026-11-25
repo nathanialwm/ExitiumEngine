@@ -1,6 +1,7 @@
 # ADR-0008: Three AI review rounds before escalation
 
 - Status: accepted
+- Supersedes: ADR-0005 (round count)
 - Date: 2026-11-25
 - Issue: #176
 
@@ -10,11 +11,13 @@
 
 ## Decision
 
-The owner decided on 2026-11-25 that every PR gets **three** AI review rounds. The orchestrator escalates with `needs-human` only after the third failed round. This holds for every PR type: specs, ADRs, code, factory changes and `docs-graph` PRs.
+The owner decided on 2026-11-25 that every PR gets **three** AI review rounds. The orchestrator escalates with `needs-human` when round 3 fails. This holds for every PR type: specs, ADRs, code, factory changes and `docs-graph` PRs.
 
-A round is one review pass on one head commit: the `reviewer`, the `test-reviewer`, and `perf` when it runs. The round fails if any of them requests changes. Each review comment starts with a header that names the round, `round N of 3`.
+A round is one review pass on one head commit: the `reviewer`, the `test-reviewer`, and `perf` when it runs. Every round that does not end in a merge has failed: one of them requested changes, or the round approved and a gate check then failed on the same head. Each review comment starts with a header that names the round and the head, `round N of 3, head <sha7>`. N is 1 plus the number of distinct earlier heads that got an `AI review` verdict, so a parallel or re-run review of the same head never adds a round. The `review-pr` skill states the exact counting rule.
 
 Only the round count changes. The rest of ADR-0005 stands: `needs-human` is sticky, only the owner's `human-approved` label lifts the gate, and the former gate areas get extra reviewer scrutiny.
+
+PRs already escalated under ADR-0005 stay `needs-human`. Rounds the owner asks for after an escalation, such as round 4 on #171 and #175, run outside the count and never lift the sticky label. How those post-escalation reviews run and how such a PR merges belongs to #131.
 
 ## Alternatives considered
 

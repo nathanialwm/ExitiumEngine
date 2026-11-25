@@ -21,7 +21,7 @@ description: Adversarially review an Exitium PR and post the verdict as the fact
    7. **Readability:** could a basic-level Rust reviewer follow it? Are invariants documented?
 4. **Report only real findings.** Each one gets a file:line reference, the problem and a concrete fix. No style nits that rustfmt or clippy would catch. No praise padding.
 5. **Post.** The comment's first line is `AI review, round <R> of 3, head <sha7>`, where `<sha7>` is the first 7 characters of `headRefOid` and `<R>` is the round from your prompt; without one, apply the round rule. The last line is the verdict line, with nothing after it.
-   **Round rule (ADR-0008):** `<R>` is 1 plus the number of distinct head SHAs, other than the head under review, among earlier comments by `exitium-factory[bot]` whose first line starts with `AI review` and whose last line matches `^verdict: (approve|changes requested)$`. A header without `head <sha7>` (posted before this rule) counts as its own head. A round that does not end in a merge has failed: it requested changes, or it approved and a gate check then failed on the same head. The PR escalates with `needs-human` when round 3 fails.
+   **Round rule (ADR-0008):** `<R>` is 1 plus the number of distinct head SHAs, other than the head under review, among earlier comments by `exitium-factory[bot]` whose first line starts with `AI review` and whose last line matches `^verdict: (approve|changes requested)$`. A header without `head <sha7>` (posted before this rule) counts as its own head. A round that does not end in a merge has failed: it requested changes, or it approved and a gate check then failed on the same head. The PR escalates with `needs-human` when round 3 fails. Post-escalation rounds (below) never count, because their header does not start with `AI review`.
    This prints the first line of each comment the rule counts:
    ```bash
    T api repos/nathanialwm/ExitiumEngine/issues/<N>/comments --paginate --jq '.[]
@@ -29,7 +29,8 @@ description: Adversarially review an Exitium PR and post the verdict as the fact
      | select((.[0] | startswith("AI review")) and (last | test("^verdict: (approve|changes requested)$")))
      | .[0]'
    ```
-   Then post:
+   **Post-escalation round (ADR-0009):** the owner may ask for a review of an escalated (`needs-human`) PR. If your prompt says this is a post-escalation round, the first line is `Post-escalation AI review, round <N>, head <sha7>`, with `<N>` from your prompt. Without one, `<N>` is 1 plus the number of distinct head SHAs, other than the head under review, among the comments the round rule counts and earlier `exitium-factory[bot]` comments whose first line starts with `Post-escalation AI review` and whose last line is a verdict line. To list both, change the command's first test to `(.[0] | startswith("AI review") or startswith("Post-escalation AI review"))`. Review only what the prompt scopes: the fixes the owner asked for and the diff since the escalated head, plus the step 2 checks. Post the comment and status as below. Your verdict goes to the owner: it never lifts `needs-human`, and the owner's `human-approved` decides the merge.
+   Then post (a post-escalation round uses its own first line):
    ```bash
    T pr comment <N> --body "AI review, round <R> of 3, head <sha7>
    <findings or 'No blocking issues.'>

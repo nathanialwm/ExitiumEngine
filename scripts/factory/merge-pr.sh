@@ -10,6 +10,10 @@
 # .github/workflows, and the factory App lacks the Workflows permission, so only
 # the owner can push such changes.
 #
+# Every PR needs ci-pass, pr-title and human-gate. A normal PR also needs
+# factory/ai-review. An escalated (needs-human) PR needs the owner's approval in
+# its place (ADR-0009; see the needs-human block below).
+#
 # Usage: scripts/factory/merge-pr.sh <pr-number>
 # Exit codes: 0 merged, 1 a check failed, 2 checks still pending (or a
 # needs-human PR waiting for the owner's human-approved label and status).
@@ -36,16 +40,20 @@ pending=0
 failed=0
 
 # Sets $newest to the newest state of a context from the expected creator, or
-# "missing". The API lists statuses newest first, and --paginate reads every
-# page, so a busy head can't push the status off the first page. gh's --jq runs
-# on each page in turn, so the matching states print newest first.
+# "missing". Also sets $newest_at to when that status was posted, as a 14-digit
+# UTC number (YYYYMMDDhhmmss, empty when missing), so two statuses compare with
+# -lt. The API lists statuses newest first, and --paginate reads every page, so
+# a busy head can't push the status off the first page. gh's --jq runs on each
+# page in turn, so the matching rows print newest first.
 # gh's built-in --jq is used because jq itself is not installed everywhere.
 newest_state() {
-  local context="$1" creator="$2" states
-  states=$(gh api --paginate "repos/$repo/commits/$head/statuses?per_page=100" --jq \
-    ".[] | select(.context == \"$context\" and .creator.login == \"$creator\") | .state")
-  newest=$(head -n 1 <<< "$states")
+  local context="$1" creator="$2" rows
+  rows=$(gh api --paginate "repos/$repo/commits/$head/statuses?per_page=100" --jq \
+    ".[] | select(.context == \"$context\" and .creator.login == \"$creator\")
+         | [.state, .created_at] | join(\" \")")
+  read -r newest newest_at <<< "$(head -n 1 <<< "$rows")"
   [ -n "$newest" ] || newest=missing
+  newest_at="${newest_at//[!0-9]/}"
 }
 
 check_status() {
@@ -57,9 +65,23 @@ check_status() {
     *) echo "FAILED   $context ($newest)"; failed=1 ;;
   esac
 }
+
+# Prints the PR's current labels, one per line. Callers assign the output, so
+# under `set -e` a failed read stops the script (exit 1): it fails closed.
+pr_labels() {
+  gh pr view "$pr" --repo "$repo" --json labels --jq '.labels[].name'
+}
+
+# Read first, because needs-human decides how the review is checked. The labels
+# are read again just before the merge.
+labels=$(pr_labels)
+needs_human=no
+grep -qx needs-human <<< "$labels" && needs_human=yes
+
 check_status pr-title "$actions_bot"
 check_status human-gate "$actions_bot"
-check_status factory/ai-review "$factory_bot"
+# An escalated PR's review is checked in the needs-human block below instead.
+[ "$needs_human" = yes ] || check_status factory/ai-review "$factory_bot"
 
 conclusion=$(gh api "repos/$repo/commits/$head/check-runs?check_name=ci-pass&filter=latest" \
   --jq '[.check_runs[] | select(.app.slug == "github-actions")] | first
@@ -69,12 +91,6 @@ case "$conclusion" in
   pending | missing) echo "pending  ci-pass"; pending=1 ;;
   *) echo "FAILED   ci-pass ($conclusion)"; failed=1 ;;
 esac
-
-# Prints the PR's current labels, one per line. Callers assign the output, so
-# under `set -e` a failed read stops the script (exit 1): it fails closed.
-pr_labels() {
-  gh pr view "$pr" --repo "$repo" --json labels --jq '.labels[].name'
-}
 
 # An escalated (needs-human) PR needs the owner's approval, in two parts that
 # must both hold:
@@ -89,17 +105,32 @@ pr_labels() {
 #   the current label is the only withdrawal signal. Keep this check.
 # A withdrawn approval, like a missing one, leaves the PR waiting for the owner:
 # pending.
-labels=$(pr_labels)
-needs_human=no
-if grep -qx needs-human <<< "$labels"; then
-  needs_human=yes
+#
+# The owner's approval also stands in for factory/ai-review (ADR-0009): after
+# escalation the owner decides, so a missing review status, or a failing one
+# posted before the approval, does not block. One case still waits: a
+# non-success factory/ai-review posted at or after the newest approval, such as
+# a post-escalation round that fails after the owner approved the same head.
+# The owner has not seen that verdict, so they must re-apply human-approved
+# after reading it. An unreadable timestamp makes `-lt` fail, so it waits too.
+if [ "$needs_human" = yes ]; then
   newest_state human-approved "$actions_bot"
+  approval="$newest" approval_at="$newest_at"
   if ! grep -qx human-approved <<< "$labels"; then
-    echo "pending  human-approved (label not on PR, status $newest)"; pending=1
-  elif [ "$newest" = success ]; then
+    echo "pending  human-approved (label not on PR, status $approval)"; pending=1
+  elif [ "$approval" = success ]; then
     echo "ok       human-approved"
   else
-    echo "pending  human-approved ($newest)"; pending=1
+    echo "pending  human-approved ($approval)"; pending=1
+  fi
+
+  newest_state factory/ai-review "$factory_bot"
+  if [ "$newest" = success ] || [ "$newest" = missing ]; then
+    echo "ok       factory/ai-review ($newest; the owner's approval decides)"
+  elif [ "$approval" = success ] && [ "$newest_at" -lt "$approval_at" ]; then
+    echo "ok       factory/ai-review ($newest, but the owner approved after it)"
+  else
+    echo "pending  factory/ai-review ($newest; the owner must approve after it)"; pending=1
   fi
 fi
 

@@ -17,7 +17,7 @@ A round is one review pass on one head commit: the `reviewer`, the `test-reviewe
 
 Only the round count changes. The rest of ADR-0005 stands: `needs-human` is sticky, only the owner's `human-approved` label lifts the gate, and the former gate areas get extra reviewer scrutiny.
 
-PRs already escalated under ADR-0005 stay `needs-human`. Rounds the owner asks for after an escalation, such as round 4 on #171 and #175, run outside the count and never lift the sticky label. How those post-escalation reviews run and how such a PR merges belongs to #131.
+PRs already escalated under ADR-0005 stay `needs-human`. Rounds the owner asks for after an escalation, such as round 4 on #171 and #175, run outside the count and never lift the sticky label. [ADR-0009](0009-merging-escalated-prs.md) decides how those post-escalation reviews run, their header, and how an escalated PR merges.
 
 ## Alternatives considered
 

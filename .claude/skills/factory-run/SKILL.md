@@ -56,14 +56,14 @@ A footprint is **concrete** when it has all four fields and every entry is `none
 
 Two issues may run at the same time only if **all** of these hold. If any answer is "probably" or "unsure", the answer is no.
 
-1. **Disjoint edits:** no entry of one issue's `Edits` (plus `Governs`) equals or contains an entry of the other's. One crate or example has at most one issue in flight. A `Hotspots` entry counts here too when it contains the other's `Edits` entry: the `examples/` hotspot contains every example directory.
+1. **Disjoint edits:** no entry of one issue's `Edits` (plus `Governs`) equals or contains an entry of the other's. One crate or example has at most one issue in flight. A `Hotspots` entry counts here too when it contains the other's `Edits` entry: a `Hotspots` entry `examples/` or `examples/*` contains every example directory.
 2. **No shared hotspot:** at most one in-flight item touches any hotspot at all.
 3. **No crate dependency:** neither issue edits a crate that depends, directly or transitively, on a crate the other edits. Use the graph as it will be after both land: the current graph plus both issues' `New crate edges`. Read the current graph with `cargo tree -i <crate> --workspace --target all --all-features -e normal,build,dev --prefix none`, which lists every workspace crate that depends on `<crate>` on any target and feature set. This rules out semantic conflicts, where both PRs pass CI alone but break `main` together.
 4. **No issue dependency:** neither is blocked by the other, and neither needs an API the other is adding.
 
 Spec files that govern no crate (`Governs: none`) only need rules 1, 2 and 4.
 
-**Examples under rule 3.** An example crate depends on the facade only (C1 in `docs/specs/mvp-roadmap.md`), so it depends on `crates/exitium/` and, through it, on every crate the facade depends on: each crate whose `cargo tree -i` list includes the facade package `exitium`. No example depends on another. So two different examples may run together, but an example never runs beside an issue that touches the facade or edits a crate under it. Apply this even before the examples are workspace members and `cargo tree` can see them.
+**Examples under rule 3.** An example crate depends on the facade only (C1 in `docs/specs/mvp-roadmap.md`), so it depends on `crates/exitium/` and, through it, on every crate under the facade: every workspace crate other than `exitium` itself that `cargo tree -p exitium --target all --all-features -e normal,build,dev --prefix none` lists. Use rule 3's graph, the current graph plus both issues' `New crate edges`: an entry that adds an edge from the facade, or from any crate under it, extends that set. No example depends on another, unless `cargo tree` or a `New crate edges` entry shows an edge between them; then rule 3 applies as usual. So two different examples may run together, but an example never runs beside an issue that touches the facade or edits a crate under it. The example crate need not exist yet: this test reads the facade's dependency set, not the example's.
 
 An in-progress issue with no `## Footprint` counts as editing every crate directory, every example directory and every `docs/specs/` file, and as touching every hotspot, until it has one. It therefore conflicts with any footprint that names at least one path.
 

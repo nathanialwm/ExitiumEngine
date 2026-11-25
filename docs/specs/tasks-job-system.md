@@ -61,7 +61,7 @@ clippy.toml       disallowed-methods: std::time::Instant::now, std::thread::spaw
 
 **Module boundary.** `scope.rs` owns everything the transmute's soundness depends on: the `Scope` type and its variance (I4), the spawn wrapper (I1, I2, I5), `erase`, and the wait region with its abort guard (I2, I3, I6). `Scope`, `ScopeShared` and their fields are private to `scope.rs`; `pool.rs`, `queue.rs` and `par.rs` cannot construct a `Scope` or touch `pending`. They offer `scope.rs` a small safe interface (`Shared::push(Queued)`, `Shared::find_job(filter) -> Option<Queued>`, `Shared::wake_one()`, `Shared::park_hint()`) and call `scope`/`spawn` through its public safe API. Consequence: a PR that could break soundness has to edit `scope.rs`, the designated unsafe module, which every reviewer must audit as high-risk (CLAUDE.md, ADR-0005): every `// SAFETY:` argument and the invariants table are re-checked on each such PR, and the soundness argument below rests on that single audited surface. Even a bug in the safe modules (a panic in `find_job`, a lost job) can only cause an abort or a hang, never a use-after-free, because the abort guard turns any unwind in the wait region into an abort and `scope` never returns while `pending > 0`.
 
-`exitium_tasks` has **no external dependencies**. Optional workspace-internal path dependencies, each behind a feature that is off by default: `reflect` (`exitium_reflect`, derives `Reflect` on the stats/budget types, see MCP section) and `profiling` (`exitium_profiler` spans, #65). Neither pulls a third-party crate. **Both are workspace edges, and neither is in intake 1:** `tasks -> profiler` is added by #65 (ECS scheduler spec, "Profiler and tasks amendments" item 5), and `tasks -> reflect` is an **edge PR** (roadmap C5), see "Reflection" below. Until then `exitium_tasks` depends on no workspace crate.
+`exitium_tasks` has **no external dependencies**. Optional workspace-internal path dependencies, each behind a feature that is off by default: `reflect` (`exitium_reflect`, derives `Reflect` on the stats/budget types, see MCP section) and `profiling` (`exitium_profiler` spans, #65). Neither pulls a third-party crate. **Both are workspace edges, and neither is in intake 1:** `tasks -> profiler` is added by #65 (ECS scheduler spec, "Profiler and tasks amendments" item 5), and `tasks -> reflect` is an **edge PR** (roadmap C5), see "Reflection" below. Until then `exitium_tasks` depends on no workspace crate other than the ones intake 1 declares (whichever way the `tasks -> core` question in the roadmap settles, this sentence stays true).
 
 ### Thread budget
 
@@ -145,6 +145,8 @@ struct ScopeShared {                    // one Arc per scope(); each job holds a
     pending: AtomicUsize,               // spawned and not yet finished
     panic: Mutex<Option<Box<dyn Any + Send>>>,   // first job panic payload
     waiter: Thread,                     // the thread blocked in scope(), unparked on completion
+    #[cfg(feature = "profiling")]
+    span: exitium_profiler::SpanHandle, // the scope's own `exitium_tasks::scope` span, made at scope() entry; EVERY spawn (also one made inside a job) propagates this, never Span::current() (ECS scheduler spec, "Profiler and tasks amendments" item 5)
 }
 pub struct Scope<'scope, 'env: 'scope> {
     shared: &'scope Shared,
@@ -220,7 +222,7 @@ pub fn current_threads() -> u32;
 pub fn current_worker_index() -> Option<u32>;    // Some(i) on exitium-worker-i, None on any other thread
 ```
 
-**Which pool do the free functions use?** The ECS spec calls `exitium_tasks::parallel_for` with no pool argument, so the pool is found in this order: (1) the pool of the job currently running on this thread (a `thread_local` set by workers for their lifetime and by a helping thread for the duration of each job it runs), (2) the process **default pool**, installed once by `exitium_app` with `TaskPool::set_default(Arc<TaskPool>) -> Option<Arc<TaskPool>>` (an `RwLock<Option<Arc<TaskPool>>>`, read cost about 20 ns per free-function call, not per item; worker threads hit the thread-local first and skip it), (3) a static inline pool (`ThreadBudget::single()`), so library code and unit tests work with no setup. Unit tests of this crate use explicit `TaskPool` values and never touch the default.
+**Which pool do the free functions use?** The ECS spec calls `exitium_tasks::parallel_for` with no pool argument, so the pool is found in this order: (1) the pool of the job currently running on this thread (a `thread_local` set by workers for their lifetime and by a helping thread for the duration of each job it runs), (2) the process **default pool**, installed once by the facade's `ThreadingPlugin` (app-platform spec, F4; not by `exitium_app`, which has no `exitium_tasks` edge) with `TaskPool::set_default(Arc<TaskPool>) -> Option<Arc<TaskPool>>` (an `RwLock<Option<Arc<TaskPool>>>`, read cost about 20 ns per free-function call, not per item; worker threads hit the thread-local first and skip it), (3) a static inline pool (`ThreadBudget::single()`), so library code and unit tests work with no setup. Unit tests of this crate use explicit `TaskPool` values and never touch the default.
 
 **`parallel_for` contract.**
 

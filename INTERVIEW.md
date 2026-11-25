@@ -12,7 +12,7 @@ This document records the answers given during the interview and my understandin
 
 **Exitium** is a 2D game engine written in Rust. Its main priority is performance. Its primary user is **an AI agent**; the human developer/designer mostly reviews, edits and cleans up what agents produce. Even so, the engine must ship a complete standalone visual editor that humans can use for all work.
 
-The repository runs as an **AI software factory**. Claude agents with defined roles take approved GitHub Issues, implement them in parallel worktrees, open PRs, review them, and auto-merge when every gate passes. The owner intervenes only when a PR fails two AI review rounds (ADR-0005).
+The repository runs as an **AI software factory**. Claude agents with defined roles take approved GitHub Issues, implement them in parallel worktrees, open PRs, review them, and auto-merge when every gate passes. The owner intervenes only when a PR fails three AI review rounds (ADR-0005, ADR-0008).
 
 The first consumer was planned as **Glutton**, an incremental roguelite in a separate repository. It is UI-heavy and uses static (non-animated) hand-drawn portraits. It has **no pixel art**. It needs cloud saves, leaderboards and server-side offline gains, and it releases a Steam demo and an itch.io build at the same time.
 
@@ -67,7 +67,7 @@ Later consumers:
 |---|---|---|
 | A1 | Main loop | Confirmed: Issue → plan → implement on a branch → PR → CI → AI review → merge → graph/docs update. |
 | A2 | Autonomy | **(b)**: auto-merge when CI is green and the AI review passes. The owner reviews only flagged PRs. |
-| A3 | Human gates (always need owner approval) | Public API changes, new dependencies, CI/factory config, save-format/serialization changes, licensing, anything touching secrets, Steam releases. Superseded by ADR-0005: the owner is involved only when a PR fails two AI review rounds. |
+| A3 | Human gates (always need owner approval) | Public API changes, new dependencies, CI/factory config, save-format/serialization changes, licensing, anything touching secrets, Steam releases. Superseded by ADR-0005: the owner is involved only when a PR fails three AI review rounds (ADR-0008). |
 | A4 | Agent roles | See the role table below. |
 | A5 | AI vendor | Claude only. |
 | A6 | Where agents run | **(b)**: on the dev machine through T3 Code with git worktrees. The Docker runners are for CI only. |
@@ -78,7 +78,7 @@ Later consumers:
 | A11 | Definition of done | fmt, clippy `-D warnings`, tests, no bench regression above **5%**, WASM build, docs and MCP schema updated, graphify regenerated. |
 | A12 | Notifications | GitHub notifications and Claude (push) notifications. |
 | A13 | Memory/conventions | Root `CLAUDE.md` + per-crate `CLAUDE.md`/`AGENTS.md`, the graphify graph as the shared map, and a `docs/decisions/` ADR log. |
-| A14 | Self-improvement | Agents may edit the factory (prompts, workflows, rules, skills), **but every such change requires owner approval**. Superseded by ADR-0005: factory changes are reviewed like code; the owner is involved only after two failed review rounds. |
+| A14 | Self-improvement | Agents may edit the factory (prompts, workflows, rules, skills), **but every such change requires owner approval**. Superseded by ADR-0005: factory changes are reviewed like code; the owner is involved only after three failed review rounds (ADR-0008). |
 
 #### Agent roster
 

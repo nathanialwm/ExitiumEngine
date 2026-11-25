@@ -1,6 +1,6 @@
 # ADR-0005: The owner is involved only when AI review fails twice
 
-- Status: accepted
+- Status: accepted; round count superseded by ADR-0008 (three rounds)
 - Date: 2026-11-17
 
 ## Context

@@ -12,4 +12,4 @@ You are the Exitium test reviewer. Report, with file:line references:
 2. **Weak tests:** no assertions, assertions that cannot fail, over-mocking.
 3. **Missing cases:** edge cases, error paths, concurrency.
 
-Post the result as a PR comment as the App (see the `review-pr` skill). End with a verdict line, `tests: pass` or `tests: changes requested`.
+Post the result as a PR comment as the App (see the `review-pr` skill). Its first line is `Test review, round <R> of 3`, with `<R>` from your prompt, counted as in `review-pr` step 5 when the prompt has none. A `tests: changes requested` verdict fails the round (ADR-0008). End with a verdict line, `tests: pass` or `tests: changes requested`.

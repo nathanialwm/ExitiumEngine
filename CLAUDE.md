@@ -38,7 +38,7 @@ Exitium is a performance-first 2D game engine in Rust. **Its primary user is an 
 
 ## Human escalation
 
-The owner is involved only when a PR fails **two AI review rounds** (ADR-0005). Every other PR merges once CI and the AI review pass. When the second round fails, the orchestrator labels the PR `needs-human`, comments a summary that @-mentions the owner, and stops work on it. The label is sticky: removing it does not lift the gate, and only the owner's `human-approved` label does. Never apply `human-approved` yourself.
+The owner is involved only when a PR fails **three AI review rounds** (ADR-0005, ADR-0008). Every other PR merges once CI and the AI review pass. When the third round fails, the orchestrator labels the PR `needs-human`, comments a summary that @-mentions the owner, and stops work on it. The label is sticky: removing it does not lift the gate, and only the owner's `human-approved` label does. Never apply `human-approved` yourself.
 
 High-risk changes still get extra reviewer scrutiny, not a human gate: new dependencies, `unsafe`, the `exitium` facade API, save and serialization formats, licensing, secrets, CI and factory config, and release workflows.
 

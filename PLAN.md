@@ -89,7 +89,7 @@ Issue (owner / agent-filed)
   → Perf Agent runs benches when hot paths changed
   → PR opened (Conventional Commit title, linked issue)
   → CI (all jobs required) + Reviewer (Sonnet 5.5 high) posts `factory/ai-review` status
-  → human-gate check: only PRs escalated with `needs-human` (two failed review rounds) need the owner's `human-approved` (ADR-0005)
+  → human-gate check: only PRs escalated with `needs-human` (three failed review rounds) need the owner's `human-approved` (ADR-0005, ADR-0008)
   → auto-merge (squash)
   → Docs & Graph Maintainer refreshes docs, MCP docs and the graph
   → notifications (GitHub + Claude push)
@@ -124,7 +124,7 @@ The Token Optimizer runs on a schedule, e.g. after every N merged PRs or weekly.
 
 ### Human gates, enforced by the `human-gate` CI check
 
-*Superseded by ADR-0005: the only human gate is a PR that fails two AI review rounds (`needs-human`). The areas below now get extra reviewer scrutiny instead.*
+*Superseded by ADR-0005: the only human gate is a PR that fails three AI review rounds (`needs-human`, round count from ADR-0008). The areas below now get extra reviewer scrutiny instead.*
 
 The check fails unless the owner has applied `human-approved` when a PR touches any of:
 

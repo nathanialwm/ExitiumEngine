@@ -405,7 +405,7 @@ pub struct BinaryLimits {
     pub max_types: u32,          // 65_536: schema entries
     pub max_strings: u32,        // 16 Mi
     pub max_string_bytes: u32,   // 256 MiB: the string table's data
-    pub max_values: u64,         // 256 Mi: values per top-level value; every leaf, struct, enum, option, list and map node and every element decoded one by one counts 1, so a list is its node plus its elements (`len + 1`; time guard); a bulk element does not (see below)
+    pub max_values: u64,         // 256 Mi: values per top-level value; every leaf, struct, enum, option, list and map node and every element decoded one by one counts 1, so a list of leaf elements is its node plus its elements (`len + 1`), while a non-leaf element (a struct, list or map) counts its whole subtree (time guard); a bulk element does not (see below)
     pub max_decoded_bytes: u64,  // 1 GiB: heap per top-level value (nodes and typed bulk arrays; memory guard)
     pub max_string_bytes_decoded: u64, // 1 GiB: cumulative decoded string bytes per FILE, across every value of a session
     pub max_zero_size_elements: u64,   // 16 Mi: cumulative elements of zero-byte types (`Vec<()>`, `Vec<EmptyStruct>`) per FILE
@@ -686,7 +686,7 @@ The container check order (steps 1 to 10 in "Header") is built in three places: 
   - [ ] String-table parse: invalid UTF-8, a duplicate entry, a non-zero pad byte, offsets that decrease or do not end at `data_len`, and `strtab_len` that is not the padded size each give the listed error, in check order.
   - [ ] Bomb tests (a 1 TB claim, a ratio above `min(codec.max_ratio(), limits.max_ratio)` for codec 0, LZ4 and a custom codec, chunk size mismatch) fail before a large allocation (counting allocator).
   - [ ] Benchmarks `exitium_serial/binary/{lz4_compress,lz4_decompress}/*` meet the budget.
-  - [ ] Edit #58: drop `gate:human` and `needs-spec`, replace "zstd and LZ4" with LZ4 and the pluggable `Codec`, add the Footprint.
+  - [ ] Edit #58: remove `needs-spec`, replace "zstd and LZ4" with LZ4 and the pluggable `Codec`, add the Footprint.
 - Blocked by: <intake-1>, B1.
 
 **B3. `feat(serial): binary schema section (write, parse, verify, recursion check, inspect)`** (new, about 600 lines)
@@ -721,7 +721,7 @@ The container check order (steps 1 to 10 in "Header") is built in three places: 
   - [ ] The 176-byte worked example matches byte for byte; golden files for every row of the body table except maps and bulk.
   - [ ] Deterministic output across runs; transparent types erased; `hidden` fields written, `skip` fields absent; `to_binary` of a type with an infinite schema (`Option<A>` with `struct A { a: Box<A> }`) is `RecursiveSchema` (the B3 check) and writes nothing.
   - [ ] Benchmark `exitium_serial/binary/encode_rows/{1000,100000}` meets the budget.
-  - [ ] Edit #56: drop `gate:human` and `needs-spec`, retitle to "binary encoder", add the Footprint.
+  - [ ] Edit #56: remove `needs-spec`, retitle to "binary encoder", add the Footprint.
 - Blocked by: <intake-1>, B3, #31, #32, #33, #37.
 
 **B7. `feat(serial): binary encoder for maps and bulk arrays`** (new, about 550 lines)
@@ -738,7 +738,7 @@ The container check order (steps 1 to 10 in "Header") is built in three places: 
   - [ ] Every `decode(encode(x)) == x` through `reflect_eq` for the B6 golden files that use these kinds; every rejection in the leaves, structure, strings and canonical-form test groups, including the string amplification test (a counting allocator).
   - [ ] Depth and value-count tests fail without allocation or stack overflow (also on wasm32); the `max_values` boundary is exact (at `max_values = 1000`, a struct of 999 leaf fields costs 1 + 999 = 1000 and is accepted, one of 1000 fields costs 1001 and is `TooManyValues`); the `Num` NaN case is `InvalidValue` and `-0.0` and infinity are `NonCanonical`; `NonZeroU32` zero fails.
   - [ ] Benchmark `exitium_serial/binary/decode_struct/{1000,100000}` meets the budget.
-  - [ ] Edit #57: drop `gate:human` and `needs-spec`, retitle to "binary decoder", add the Footprint.
+  - [ ] Edit #57: remove `needs-spec`, retitle to "binary decoder", add the Footprint.
 - Blocked by: <intake-1>, B5, B6, #32.
 
 **B9. `feat(serial): binary decoder for lists and maps`** (existing #57, part 2; about 450 lines)
@@ -752,7 +752,7 @@ The container check order (steps 1 to 10 in "Header") is built in three places: 
 **B10. `feat(serial): binary decoder for bulk arrays and zero-copy views`** (new, about 500 lines)
 - Adds bulk decoding for both tags (typed `Vec<T>` fast path for the ten castable primitives, validated `Vec<bool>` and `Vec<char>`, `Vec<i128>` / `Vec<u128>`, the element-wise validated path for `Num` and similar), the `PACKED_INTS` flag and tag agreement check, `len`/`byte_len` and budget charges before decoding, `BinaryReader::open`, `open_owned` and `read_bulk_view` (only the part a single bulk root needs; sessions are B13), and the `FromReflect` acceptance test for `Vec<T>` and `[T; N]` from a concrete `Vec<T>`.
 - Acceptance criteria:
-  - [ ] The bulk, zero-copy and canonical-form test groups: tag/flag mixing is `BadBulkTag`, packed on a non-packable repr is `BadBulkTag`, `len > byte_len`, an element overflowing its width, the `2^30`-element and 8x-expansion budget cases, and the exact `Vec<Num>` boundaries (at `max_values = 1000` a list of 999 costs 1000 and is accepted and one of 1000 costs 1001 and is `TooManyValues`; at `max_decoded_bytes = 72 * 1000` a list of 1000 costs 72,000 and is accepted and one of 1001 costs 72,072 and is `DecodedTooLarge`).
+  - [ ] The bulk, zero-copy and canonical-form test groups: tag/flag mixing is `BadBulkTag`, packed on a non-packable repr is `BadBulkTag`, `len > byte_len`, an element overflowing its width, the `2^30`-element and 8x-expansion budget cases, and the exact `Vec<Num>` boundaries (each case runs with the other limit at its default; at `max_values = 1000` a list of 999 costs 1000 and is accepted and one of 1000 costs 1001 and is `TooManyValues`; at `max_decoded_bytes = 72 * 1000` a list of 1000 costs 72,000 and is accepted and one of 1001 costs 72,072 and is `DecodedTooLarge`).
   - [ ] A view over a decompressed payload outlives the reader and is `Send`; `open` copies once and `open_owned` does not (counting allocator); the big-endian owned path equals the cast path.
   - [ ] Benchmarks `exitium_serial/binary/{decode_bulk,decode_packed,view}/*` meet the budget (the 32 MB bulk decode at >= 600 MB/s, `open_owned` <= 36 ms).
 - Blocked by: <intake-1>, B7, B9.
@@ -816,7 +816,7 @@ The container check order (steps 1 to 10 in "Header") is built in three places: 
 
 Applied by the architect when this spec merges (the bullets are the contract; dependencies are the `Blocked by` lines above):
 
-- **#56, #57, #58, #59, #60:** as described under B6, B8 and B9, B2, B4 and B12, and B14. Remove `needs-spec` and `gate:human` from all five (ADR-0005; the PR Risk section names the serialization format); add the Footprint; set `Blocked by` as listed under the issue. #58's zstd scope is dropped (SP14). Add `area:serial` where missing.
+- **#56, #57, #58, #59, #60:** as described under B6, B8 and B9, B2, B4 and B12, and B14. Remove `needs-spec` from #56 to #59 (#60 does not carry it, and none of the five carries `gate:human`; there is no human gate under ADR-0005 as amended by ADR-0008, so the PR Risk section names the serialization format for extra reviewer scrutiny instead); add the Footprint; set `Blocked by` as listed under the issue. #58's zstd scope is dropped (SP14). Add `area:serial` where missing.
 - **#61:** retitle and re-scope per C7 (the binary world snapshot in `exitium_save`, SP14), and note that it builds on B13 and B10's views. Not an `exitium_serial` issue.
 - **#36 (schema hash):** `SchemaEntry` gains `stream: Vec<u8>`, the exact shallow stream (version byte first), as part of the persisted-format contract with a parse test; export `fnv1a_64(bytes: &[u8]) -> u64`; export the `ValueRepr` to and from code table (`repr_code`, `repr_from_code`); add `TypeRegistry::schema_table_for(root, hash_version)` (trivially the current table while only version 1 exists). The stream grammar in the reflect spec is the contract and the golden vectors cover it.
 - **#32, #33:** `FromReflect` for `Vec<T>` and `[T; N]` accepts any `List` value of matching items (including a concrete `Vec<T>` of the same element type), and the `Dynamic*` builders can create values by field name with no `represented_type_info` (used for old-schema nodes); both are tested there.

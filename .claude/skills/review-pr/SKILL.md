@@ -8,7 +8,9 @@ description: Adversarially review an Exitium PR and post the verdict as the fact
 `T` is short for `scripts/factory/gh-app.sh`, which runs gh as the App (CLAUDE.md "GitHub identity"): `T pr diff 42` means `scripts/factory/gh-app.sh pr diff 42`.
 
 1. **Load:** `T pr view <N> --json title,body,headRefOid,files,labels`, then `T pr diff <N>`. Read the linked issue's acceptance criteria.
-2. **Check out the head** in a scratch worktree. Run the definition-of-done commands from the `implement-issue` skill. A failure means changes requested.
+2. **Check out the head** in a scratch worktree. Never run `git checkout`, `git switch` or `gh pr checkout` in the main checkout: parallel reviewers and the orchestrator share it, so moving its HEAD makes them read the wrong files.
+   - Run `git fetch origin`, then `git worktree add ../exitium-wt/review-<N> <headRefOid>`. Run the definition-of-done commands from the `implement-issue` skill there. A failure means changes requested. Remove it after with `git worktree remove --force ../exitium-wt/review-<N>`.
+   - Docs-only PR (Markdown only, nothing to build): skip the worktree. After `git fetch origin`, read each file with `git show <headRefOid>:<path>` and compare it with `git show origin/main:<path>`. In Git Bash, prefix these with `MSYS_NO_PATHCONV=1`, or a path like `origin/main:.claude/...` gets mangled.
 3. **Review, in this order:**
    1. **Correctness:** logic errors, edge cases, panics on valid input, integer overflow, concurrency races, `unsafe` soundness. Every `unsafe` block needs a valid `// SAFETY:` argument.
    2. **Acceptance criteria:** is each one met?

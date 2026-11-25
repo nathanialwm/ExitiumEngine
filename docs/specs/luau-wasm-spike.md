@@ -23,7 +23,7 @@ Evidence in six lines:
 1. A documented recipe exists (`mlua` 0.12.3 `docs/wasm32.md`) and built on stable Rust 1.100.0, on Windows and in an Ubuntu 24.04 container.
 2. In Chrome 158 a hello-world script ran, and mlua's own tests (eval, errors, callbacks, coroutines) passed.
 3. Size: 471 KB gzip for the full E8 module through `wasm-bindgen` (401 KB after `wasm-opt -Os`), against 11 KB for the SDK-free stub. That is about 0.46 MB of the 13 MB web budget.
-4. One Lua to Rust call costs about 60 to 70 ns in Chrome against 37 to 43 ns native: 1.6x at the median, 2.3x at the worst run. Pure Luau compute (`fib(30)`) is 1.0x to 1.1x, allocation-heavy scripts are 0.9x to 1.25x, and 10,000 scripted entities take 2.2 ms per frame at the median against the 4 ms budget. The 2.5x budget holds; the 4 ms budget holds at the median and is exceeded at p99 in a live loop (see "Q3").
+4. One Lua to Rust call costs about 60 to 70 ns in Chrome against 37 to 43 ns native: 1.6x at the median, 2.3x at the worst run. Pure Luau compute (`fib(30)`) is 1.1x, allocation-heavy scripts are 0.9x to 1.25x, and 10,000 scripted entities take 2.2 ms per frame at the median against the 4 ms budget. The 2.5x budget holds; the 4 ms budget holds at the median and is exceeded at p99 in a live loop (see "Q3").
 5. The cost is toolchain, not size: the Linux CI image needs wasi-sdk (192 MB), the web build needs a loader shim, and three recipe gaps had to be closed.
 6. **Browser floor: Chrome or Edge 137.** The module needs WebAssembly exception handling with `exnref`. Chrome 113 to 136 have WebGPU but not `exnref`, so the web build's floor moves from 113 to 137 (see "Browser floor").
 
@@ -98,7 +98,7 @@ let wasm = env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32")
 if !(wasm && env::var_os("CARGO_FEATURE_LUAU").is_some()) { return; } // native or stub: no SDK
 ```
 
-The earlier E5 `build.rs` did `env::var("WASI_SDK_PATH")?` unconditionally. That breaks the stub fallback and every non-wasm build, which is the round 1 finding this section now answers.
+A `build.rs` that reads `WASI_SDK_PATH` unconditionally would break the stub fallback and every non-wasm build, so the gate above is required, not optional.
 
 **Compiler variables are target-scoped (E8).** The recipe's `LUAU_CXXFLAGS` is not target-scoped: set in a shell that also builds native code, it would feed wasm flags to the native Luau build. The spike replaced it with `CXXFLAGS_wasm32_unknown_unknown` (the `cc` crate reads it only for that target). The build then produced the same module size as the `LUAU_CXXFLAGS` build, ran in Chrome and passed the same checks, and a native build with these variables exported kept working. All variables are `*_wasm32_unknown_unknown`, so exporting them globally is safe, and `cargo xtask` can set them for child processes only. No `RUSTFLAGS` remain.
 
@@ -111,7 +111,7 @@ The earlier E5 `build.rs` did `env::var("WASI_SDK_PATH")?` unconditionally. That
 
 **E7, Linux.** The same recipe (build.rs variant) on `ubuntu:24.04` with Rust 1.100.0 and the Linux wasi-sdk 34 tarball (192 MB) built: debug 62 s (24 MB `.wasm`, dev only), release 32 s (1.54 MB, 445 KB gzip). The self-hosted CI image (`ci/runner/linux/Dockerfile`) has distro `clang` and `lld` but no wasi-sdk, so CI must add it.
 
-**The SDK-free stub (E8).** With the `luau` feature off, a wasm build on a machine with no `WASI_SDK_PATH` and no wasi-sdk compiled and linked: the module has no WASI imports, the generated JS never mentions `wasi_snapshot_preview1`, and it is 29 KB raw and 11 KB gzip for a small allocating function. This only works if the wasi-libc `#[global_allocator]` is behind the same feature. The first E8 draft had it on for every wasm32 build, which would fail to link as soon as any stub code allocated (an undefined `posix_memalign`). So the stub fallback is real, but only with the allocator and the link setup both gated on the feature.
+**The SDK-free stub (E8).** With the `luau` feature off, a wasm build on a machine with no `WASI_SDK_PATH` and no wasi-sdk compiled and linked: the module has no WASI imports, the generated JS never mentions `wasi_snapshot_preview1`, and it is 29 KB raw and 11 KB gzip for a small allocating function. This only works if the wasi-libc `#[global_allocator]` is behind the same feature. With the allocator on for every wasm32 build, the stub would fail to link as soon as any stub code allocated (an undefined `posix_memalign`). So the stub fallback is real, but only with the allocator and the link setup both gated on the feature.
 
 ### Q2: if not, which route works?
 
@@ -148,7 +148,7 @@ All browser numbers come from Chrome 158.0.8127.37 on the Windows host, headless
 
 These are module totals for a small host. E8 minus the stub gives Luau's marginal cost as about 1.49 MB raw and 460 KB gzip before `wasm-opt`.
 
-`wasm-opt`: with binaryen version_133 a plain `wasm-opt -Oz` on the E8 module succeeds and the output loads and runs in Chrome (the earlier report said explicit feature flags were required; that was not reproduced with this version, and older binaryen releases may differ). The explicit flags `--enable-exception-handling --enable-reference-types --enable-gc --enable-bulk-memory --enable-sign-ext --enable-mutable-globals --enable-nontrapping-float-to-int --enable-multivalue` also work. `--all-features` turns on compact imports, which Chrome 158 rejects ("Invalid import kind 126"). Export should pass the explicit list, not `--all-features`.
+`wasm-opt`: with binaryen version_133 a plain `wasm-opt -Oz` on the E8 module succeeds and the output loads and runs in Chrome (explicit feature flags are not required with this version; older binaryen releases may differ). The explicit flags `--enable-exception-handling --enable-reference-types --enable-gc --enable-bulk-memory --enable-sign-ext --enable-mutable-globals --enable-nontrapping-float-to-int --enable-multivalue` also work. `--all-features` turns on compact imports, which Chrome 158 rejects ("Invalid import kind 126"). Export should pass the explicit list, not `--all-features`.
 
 **Cost of one Lua to Rust call** (`lua.create_function(|_, (a, b): (i64, i64)| Ok(a + b))`, called 2,000,000 times in a Lua loop, minus the same loop without the call). One build (E8), nine runs:
 
@@ -157,7 +157,7 @@ These are module totals for a small host. E8 minus the stub gives Luau's margina
 | Chrome, E8 | 66.6 ns | 68.9 ns | 83.9 ns |
 | Native, `opt-level` `s` | 36.9 ns | 43.4 ns | n/a (not printed) |
 
-The ratio is 1.6x at the median (68.9 / 43.4) and 2.3x for the worst wasm run over the best native run (83.9 / 36.9). The earlier E2 to E5 pooled runs (nine single results across five builds, so they mix build and run variance) were 71, 55, 59, 53, 80, 58, 62, 68 and 60 ns, with a median of 60 ns and a maximum of 80 ns, against 35.5 to 38.2 ns native at `opt-level` 3. The report's earlier "81 ns" was a typo for 80. The E8 table replaces the pooled list for the ratios.
+The ratio is 1.6x at the median (68.9 / 43.4) and 2.3x for the worst wasm run over the best native run (83.9 / 36.9). The E2 to E5 runs, pooled (nine single results across five builds, so they mix build and run variance), were 71, 55, 59, 53, 80, 58, 62, 68 and 60 ns, with a median of 60 ns and a maximum of 80 ns, against 35.5 to 38.2 ns native at `opt-level` 3. The ratios in this report use the E8 table, not the pooled list.
 
 **Other workloads (E8, nine runs each, Chrome against native, same `opt-level` `s` profile):**
 
@@ -177,14 +177,14 @@ The roadmap budget is "Luau on wasm at most 2.5x slower than native". Every rati
 
 - **New CI tool:** wasi-sdk 34 on the Linux runner image (192 MB tarball), reached through `WASI_SDK_PATH`. Licences: see "Licence audit".
 - **Build time:** about 40 s extra on a clean wasm build in release and about 60 s in debug. Cached after that.
-- **Who needs the SDK.** Only builds that enable the `luau` feature on wasm (see "Conditions for AD2", conditions 1 and 6). `cargo build --workspace --target wasm32-unknown-unknown`, the CLAUDE.md definition-of-done command, keeps building the SDK-free stub, so agents and the owner need no SDK for it. A web game export with scripts, the Linux CI job that checks it, and anyone building the real web module need the SDK, and `xtask` provisions it.
+- **Who needs the SDK.** Only builds that pass the `luau` feature on the command line for wasm (see "Conditions for AD2", conditions 1 and 6). `cargo build --workspace --target wasm32-unknown-unknown`, the CLAUDE.md definition-of-done command, keeps building the SDK-free stub, so agents and the owner need no SDK for it. This holds only if no manifest enables `luau` (condition 1). A web game export with scripts on, the Linux CI job that checks it, and anyone building the real web module need the SDK, and `xtask` provisions it. A web export with scripts on and no SDK fails with the fix command (condition 6); it never falls back to the stub.
 - **Browser floor:** see "Browser floor".
-- **Loader work:** `exitium export` must ship the WASI shim (about 15 lines), an import map for `wasi_snapshot_preview1`, call `_initialize` through the `wasm-bindgen` start function, and give the shim the instance's memory (gap 3).
+- **Loader work:** `exitium export` must ship the WASI shim (about 10 lines), an import map for `wasi_snapshot_preview1`, call `_initialize` through the `wasm-bindgen` start function, and give the shim the instance's memory (gap 3).
 - **Allocator and C ABI:** the wasi-libc global allocator and the `-lc` link are new for the whole wasm build when `luau` is on.
 
 ### Browser floor
 
-The module uses WebAssembly exception handling with `exnref` (the standardised form). From MDN browser-compat-data (`webassembly/exceptionsFinal.json` and `api/GPU.json`, as checked in the round 1 review):
+The module uses WebAssembly exception handling with `exnref` (the standardised form). From MDN browser-compat-data (`webassembly/exceptionsFinal.json` and `api/GPU.json`):
 
 | Browser | `exnref` | WebGPU |
 |---|---|---|
@@ -194,14 +194,14 @@ The module uses WebAssembly exception handling with `exnref` (the standardised f
 
 So **Chrome or Edge 113 to 136 have WebGPU but not `exnref`**. A user there passes the `navigator.gpu` check and then fails with a `WebAssembly.CompileError`. Every other WebGPU browser also has `exnref`, so `exnref` shrinks the WebGPU set only in that Chrome range. Firefox and Safari are out of the MVP anyway (roadmap "Still out"). The consequences:
 
-- The web build's floor is **Chrome or Edge 137** when Luau is on. The earlier statement that this "adds no new restriction on Chrome" was wrong.
-- The assets spec (PR #166) changes the export gate text from "Chrome or Edge 113 or later" to 137 and adds the check below; this report does not edit that file.
+- The web build's floor is **Chrome or Edge 137** when Luau is on. Luau therefore does add a restriction on Chrome.
+- The assets spec (PR #166) keeps Chrome or Edge 113 as the base gate and adds a conditional 137 floor, with a `WebAssembly.validate` probe on a `try_table`, for a game that uses the script feature. The probe and the message text below agree with it. This report does not edit that file.
 - The export page feature-detects `exnref` before loading the module and says "Chrome or Edge 137 or later". A probe is a 28-byte module with one `try_table` (opcode `0x1f`), checked by `WebAssembly.validate`; it returned `true` in Chrome 158 (Appendix A, "exnref probe"). The negative case (a browser without `exnref` returning `false`) was not run, because only Chrome 158 was available.
 - Using the legacy exception ABI instead would cover Chrome 113 to 136 (legacy exception handling shipped long before). It was not tried: the SDK's libraries are built for the standard ABI, and building both is extra toolchain work. This is open question 1.
 
 ### Licence audit
 
-Licensing is a high-risk area, so this report states what the linked C and C++ pieces are. `cargo deny` (ADR-0003, `deny.toml`) only sees Cargo crates, so it cannot see wasi-libc, libc++ or the SDK. The results below come from the round 1 review, which read the upstream licence files; the one check this report ran itself is that **the wasi-sdk 34.0 Windows tarball contains no LICENSE, COPYING or NOTICE file** (it holds `VERSION`, `bin`, `include`, `lib`, `share`), so the notices must be taken from the upstream repositories at the pinned commits.
+Licensing is a high-risk area, so this report states what the linked C and C++ pieces are. `cargo deny` (ADR-0003, `deny.toml`) only sees Cargo crates, so it cannot see wasi-libc, libc++ or the SDK. The results below come from reading the upstream licence files; AD2 re-verifies them at the pinned version. The one check run locally is that **the wasi-sdk 34.0 Windows tarball contains no LICENSE, COPYING or NOTICE file** (it holds `VERSION`, `bin`, `include`, `lib`, `share`), so the notices must be taken from the upstream repositories at the pinned commits.
 
 | Component | Licence | Allowed by `deny.toml`? |
 |---|---|---|
@@ -218,18 +218,24 @@ AD2 should record route A and these conditions. If any fails in SP9 or later, it
 
 1. **CI and provisioning.**
    - The Luau web build is behind a Cargo feature (working name `luau`, on `exitium_script`). It is off by default, so `cargo build --workspace --target wasm32-unknown-unknown` builds the SDK-free stub, the CLAUDE.md definition of done keeps working unchanged, and agent worktrees need no SDK.
-   - `cargo xtask ci wasm` gains a second step that builds `exitium_script` with the feature on. That step runs only in the Linux Docker job (`ci.yml` `linux`), the only job that runs `ci wasm` today. **The Windows runner job is clippy and test only, and it stays that way**: the Windows runner is the owner host with no SDK. Adding a wasm step there would be new work, which this report does not propose.
+   - **The feature gate must hold across the whole workspace.** Resolver 3 unifies features across every member selected by `--workspace`, and the roadmap adds the `examples/*` crates as members. One manifest that enables `luau` would turn it on for every `--workspace` build and bring back the SDK requirement for every agent worktree. Three rules keep that from happening:
+     1. **Native always builds Luau.** `exitium_script` declares `mlua` in `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`, so native has Luau without any feature. (The spike's `mlua` is optional on every target, which suits a standalone crate but would drop Luau from native builds in the engine.)
+     2. **The `luau` feature only has an effect on `wasm32`.** It adds the `mlua` dependency, the wasi-libc allocator and the link setup there. Turning it on for a native build changes nothing.
+     3. **No manifest in the workspace enables `luau`, not `exitium_script`'s own default, not an `examples/*` crate, not the `exitium` facade.** The web export and the `xtask` wasm step pass it on the command line (`--features`). AD2 must record this rule, or the definition-of-done promise fails.
+   - `cargo xtask ci wasm` gains a second step that builds `exitium_script` with the feature on. It reuses `xtask`'s existing `FEATURE_CHECKS` table (`ci.rs`), which `ci wasm` already builds as `-p <crate> --features <f> --target wasm32-unknown-unknown`, by adding `("exitium_script", "luau")`. The same entry makes `ci test` run `cargo test -p exitium_script --features luau` natively, where the feature is a no-op and needs no SDK, so it is safe in the Windows job. `ci all` also calls `ci wasm`, so SP9 must make the wasm half of that entry run only where the SDK is available (always in CI, and locally only when the SDK is provisioned or `WASI_SDK_PATH` is set, with a printed notice when skipped). Otherwise a plain `cargo xtask ci all` would need the SDK on every agent worktree. The wasm step runs only in the Linux Docker job (`ci.yml` `linux`), the only job that runs `ci wasm` today. **The Windows runner job is clippy and test only, and it stays that way**: the Windows runner is the owner host with no SDK. Adding a wasm step there would be new work, which this report does not propose.
    - `xtask` provisions the SDK in a pinned, checksum-verified location and sets the target-scoped compiler variables for its child `cargo` only. The pin is the version plus a SHA-256 per platform (the Windows hash the spike used is in Appendix A; AD2 records the Linux one).
+   - **Dependencies.** The `mlua` feature set for intake 2 (#157) is `=0.12.3` with features `["luau"]`. `vendored` is not needed: `luau` always vendors the Luau source (E1 passed it redundantly). `exitium_script`'s `build.rs` uses `cc` as a build-dependency, which needs a `[workspace.dependencies]` entry and a justification in the SP9 PR body (licence, why not std), per the CLAUDE.md dependency rule. The wasi-sdk is a build tool, not a crate, so `cargo deny` does not see it (see "Licence audit").
    - The Linux Dockerfile gains the SDK layer (a 192 MB download with the pinned version and SHA-256). These are changes to `ci/runner/linux/Dockerfile`, `xtask` and, if the build entry point changes, CLAUDE.md. SP9 (or the AD2 follow-up issue) owns them; this report does not touch those paths.
 2. **Init and loader.** The shim, start function and memory capture of gap 3 work in `exitium export`'s generated loader and `exitium_platform`'s example loader, under the locked `wasm-bindgen` 0.2.130. `_initialize` runs **exactly once and first**: a Rust once-guard protects it, no Rust allocation happens before it, and it is tested against the real `main` plus `spawn_app` path, not only the spike's `requestAnimationFrame` loop (negative tests: a second call hangs `init()`; allocation before it happened to work and must not be relied on).
 3. **Allocator and bench.**
    - **Owner.** Exactly one crate declares the `#[global_allocator]`. A library crate such as `exitium_script` must not, because the final binary may only have one and roadmap #64's counting allocator is a global-allocator wrapper too. Recommendation: the `exitium` facade owns the static (it is in every game's graph exactly once), and under `luau` on wasm it is `Counting<Wasi>`; otherwise `Counting<System>`. E8's `alloc.rs` shows the wrapper composing.
    - **Unsafe policy.** The forwarding allocator is `unsafe` code. CLAUDE.md requires a designated module with `// SAFETY:` comments and Miri tests. Miri cannot run the wasi-libc FFI, so AD2 sets the rule: the wrapper's logic is Miri-tested over an inner `System` allocator, and the `posix_memalign` and `free` forwarding is checked by the Chrome run.
+   - **Forwarding.** The spike's `Wasi` forwards only `alloc` and `dealloc`, so `realloc` and `alloc_zeroed` fall back to allocate, copy and free, which makes `Vec` growth pessimistic on wasm. The real owner forwards `realloc` (for alignments up to the malloc alignment) and `alloc_zeroed` to wasi-libc. The allocation-heavy benches below are re-run after that change, because the E8 numbers were measured without it.
    - **Existing benches.** The wasi-libc allocator does not regress the existing wasm benches by more than 5% (CLAUDE.md rule 4). Those benches contain no Luau.
    - **New Luau benches.** SP9 adds an allocation-heavy Luau bench: 10,000 scripted entities running a 10-line `update` at most 4 ms per frame (roadmap), measured in the real engine on the live loop with p99 reported, plus the table and string workloads of Q3. The spike's live loop showed p99 5.1 ms against the 4 ms budget, so this condition is a real risk.
 4. The full engine module (with `wgpu` and `winit`) still instantiates and keeps the web size budget. See "Limits".
 5. **Licence.** The ADR names the exact C components and licences in "Licence audit"; exports ship a notice that covers them (wasi-libc, musl, dlmalloc, cloudlibc, libc++, libc++abi, libunwind, compiler-rt, Luau); the LICENSE files are read from the upstream repositories at the pinned SDK version (the tarball ships none); and the notice generator that ADR-0006 requires for `triple_buffer` includes them.
-6. **Export contract.** Because every web author would otherwise need wasi-sdk 34, `exitium export --target web` builds the SDK-free stub when scripts are off or the SDK is absent. `exitium export --check` gains a preflight row for the SDK (with the fix command) when the project enables scripts on the web. The loader page contract is fixed: the import map for `wasi_snapshot_preview1`, the memory capture, the start function, and the `exnref` probe. `wasm-opt`, which runs "if on PATH", must not break an export if it fails: the step falls back to the unoptimised module with a warning, and passes the explicit feature list, never `--all-features`. This decision belongs to AD2 and SP9 and lands in `assets-scene-export.md` and `export-examples.md` (SP18).
+6. **Export contract.** Because every web author would otherwise need wasi-sdk 34, `exitium export --target web` builds the SDK-free stub when scripts are **off**, and that page needs no WASI shim, import map or `exnref` probe, so its browser floor stays Chrome or Edge 113. When scripts are **on** and the SDK is absent, `exitium export` and `exitium export --check` both fail and print the fix command (the `--check` preflight row for the SDK); the export never silently ships a stub for a script game, because its scripts would do nothing. For a script game, the loader page contract is fixed: the import map for `wasi_snapshot_preview1`, the memory capture, the start function, and the `exnref` probe. `wasm-opt`, which runs "if on PATH", must not break an export if it fails: the step falls back to the unoptimised module with a warning, and passes the explicit feature list, never `--all-features`. This decision belongs to AD2 and SP9 and lands in `assets-scene-export.md` and `export-examples.md` (SP18).
 7. **Browser floor.** The documented floor is Chrome or Edge 137 with Luau on, and the export page shows it (see "Browser floor"), unless the owner chooses to build the legacy exception ABI as well (open question 1).
 
 ## MCP / editor surface
@@ -270,12 +276,12 @@ Not run: Firefox and Safari, Chrome on another OS, threads, the full engine modu
 - One machine (Windows 11) ran every browser number, with headless Chrome 158 only, and the E8 numbers ran under the "Power saver" plan.
 - The Linux container checked that the build works, not the browser run.
 - Hot reload, the safe and privileged script tiers, and real reflected field access are SP9's work.
-- The licence results come from the round 1 review's reading of upstream files plus one local check (no licence files in the SDK tarball); AD2 re-verifies them at the pinned version.
+- The licence results come from reading upstream files plus one local check (no licence files in the SDK tarball); AD2 re-verifies them at the pinned version.
 - It was not tested whether a separate Rust allocator and wasi-libc's (two heaps in one linear memory) would work without the forwarding allocator. The recipe forwards, so this report did too.
 
 ## Open questions
 
-1. **Legacy exception ABI (owner).** Building both ABIs would cover Chrome and Edge 113 to 136, which have WebGPU but not `exnref`, at the cost of a second set of SDK libraries and a runtime switch. Or the floor is Chrome or Edge 137 for the MVP. Recommendation: accept 137 for the MVP (the audience is the owner's own web build, and the page tells the user), and revisit only if an example's players need older Chrome.
+1. **Legacy exception ABI.** AD2 (#145) proceeds with the Chrome and Edge 137 floor; nothing waits for the owner. The owner can still object. Building both ABIs would cover Chrome and Edge 113 to 136, which have WebGPU but not `exnref`, at the cost of a second set of SDK libraries and a runtime switch. Or the floor is Chrome or Edge 137 for the MVP. Recommendation: accept 137 for the MVP (the audience is the owner's own web build, and the page tells the user), and revisit only if an example's players need older Chrome.
 2. **Allocator owner.** Is the `exitium` facade the right owner of the single `#[global_allocator]`? AD2 decides, together with the #64 counting allocator.
 3. **Allocator behaviour.** Does wasi-libc's dlmalloc change frame time in the engine's real allocation pattern? SP9 benchmarks it (condition 3). Also, is the forwarding allocator needed at all?
 4. **`wasm-opt` in the export step.** It saves about 15% gzip. With binaryen 133 a plain `-Oz` works, with the failure mode above for `--all-features`. Does `exitium export` run it, and pin a binaryen version? An export decision for `assets-scene-export.md` or SP18 (`export-examples.md`).
@@ -336,6 +342,8 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 ```
+
+This is a standalone crate, so `mlua` is optional on every target and the `luau` feature switches it on everywhere. The engine's `exitium_script` differs: `mlua` is a `cfg(not(target_arch = "wasm32"))` dependency (always on for native), and no manifest enables `luau` (condition 1). `cc = "1"` is the spike's loose pin; in the repo it is declared once in `[workspace.dependencies]`.
 
 **`build.rs`** (the build script reads the target from `CARGO_CFG_*`, because `cfg!` in a build script is the host)
 
@@ -763,7 +771,7 @@ window.run = async (wasmUrl) => {
 </script>
 ```
 
-**`wasi_shim.js`** (the eight imports; a 15-line shim)
+**`wasi_shim.js`** (the eight imports; a shim of about 10 lines)
 
 ```js
 const dv = () => new DataView(globalThis.__wasmMemory.buffer);

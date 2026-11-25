@@ -12,7 +12,7 @@
 #
 # Usage: scripts/factory/merge-pr.sh <pr-number>
 # Exit codes: 0 merged, 1 a check failed, 2 checks still pending (or a
-# needs-human PR waiting for the owner's human-approved status).
+# needs-human PR waiting for the owner's human-approved label and status).
 set -euo pipefail
 
 pr="${1:?usage: merge-pr.sh <pr-number>}"
@@ -70,15 +70,33 @@ case "$conclusion" in
   *) echo "FAILED   ci-pass ($conclusion)"; failed=1 ;;
 esac
 
-# Belt and braces for escalated PRs: don't trust a stale human-gate success if
-# the gate job lagged; require the owner's approval status on this head directly.
-# pr-approval.yml posts human-approved `success` when the owner applies the label
-# and `failure` when they remove it, so only the newest one counts. A withdrawn
-# approval, like a missing one, leaves the PR waiting for the owner: pending.
-labels=$(gh pr view "$pr" --repo "$repo" --json labels --jq '.labels[].name')
+# Prints the PR's current labels, one per line. Callers assign the output, so
+# under `set -e` a failed read stops the script (exit 1): it fails closed.
+pr_labels() {
+  gh pr view "$pr" --repo "$repo" --json labels --jq '.labels[].name'
+}
+
+# An escalated (needs-human) PR needs the owner's approval, in two parts that
+# must both hold:
+# - The human-approved status on this head. pr-approval.yml posts `success` when
+#   the owner applies the label. A push makes a new head with no status, so it
+#   revokes approval. Checked directly so a lagging human-gate success is not
+#   trusted.
+# - The human-approved label on the PR now. No workflow posts a failure status
+#   when the owner removes the label: pr-approval.yml runs on `labeled` only,
+#   and human-gate stays success while any success approval exists on the head.
+#   So a success status outlives a withdrawn approval with no time limit, and
+#   the current label is the only withdrawal signal. Keep this check.
+# A withdrawn approval, like a missing one, leaves the PR waiting for the owner:
+# pending.
+labels=$(pr_labels)
+needs_human=no
 if grep -qx needs-human <<< "$labels"; then
+  needs_human=yes
   newest_state human-approved "$actions_bot"
-  if [ "$newest" = success ]; then
+  if ! grep -qx human-approved <<< "$labels"; then
+    echo "pending  human-approved (label not on PR, status $newest)"; pending=1
+  elif [ "$newest" = success ]; then
     echo "ok       human-approved"
   else
     echo "pending  human-approved ($newest)"; pending=1
@@ -87,6 +105,20 @@ fi
 
 [ "$failed" = 0 ] || exit 1
 [ "$pending" = 0 ] || exit 2
+
+# Nothing in `gh pr merge` checks labels, so read them again just before it:
+# the owner may have removed human-approved while the checks above ran. If
+# needs-human came or went, stop too, so the gate is never decided on stale
+# labels. Only the gap between this read and the merge call remains.
+labels=$(pr_labels)
+needs_human_now=no
+grep -qx needs-human <<< "$labels" && needs_human_now=yes
+if [ "$needs_human_now" != "$needs_human" ]; then
+  echo "pending  needs-human label changed during checks"; exit 2
+fi
+if [ "$needs_human" = yes ] && ! grep -qx human-approved <<< "$labels"; then
+  echo "pending  human-approved (label removed during checks)"; exit 2
+fi
 
 # --match-head-commit refuses the merge if someone pushed after the checks ran.
 # The remote branch is deleted by the repo's delete-branch-on-merge setting.

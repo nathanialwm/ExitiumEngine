@@ -12,7 +12,7 @@
 #
 # Usage: scripts/factory/merge-pr.sh <pr-number>
 # Exit codes: 0 merged, 1 a check failed, 2 checks still pending (or a
-# needs-human PR waiting for the owner's human-approved status).
+# needs-human PR waiting for the owner's human-approved label and status).
 set -euo pipefail
 
 pr="${1:?usage: merge-pr.sh <pr-number>}"
@@ -73,12 +73,16 @@ esac
 # Belt and braces for escalated PRs: don't trust a stale human-gate success if
 # the gate job lagged; require the owner's approval status on this head directly.
 # pr-approval.yml posts human-approved `success` when the owner applies the label
-# and `failure` when they remove it, so only the newest one counts. A withdrawn
-# approval, like a missing one, leaves the PR waiting for the owner: pending.
+# and `failure` when they remove it, so only the newest one counts. That failure
+# lands seconds after the removal, so the label must also be on the PR now. A
+# withdrawn approval, like a missing one, leaves the PR waiting for the owner:
+# pending.
 labels=$(gh pr view "$pr" --repo "$repo" --json labels --jq '.labels[].name')
 if grep -qx needs-human <<< "$labels"; then
   newest_state human-approved "$actions_bot"
-  if [ "$newest" = success ]; then
+  if ! grep -qx human-approved <<< "$labels"; then
+    echo "pending  human-approved (label not on PR, status $newest)"; pending=1
+  elif [ "$newest" = success ]; then
     echo "ok       human-approved"
   else
     echo "pending  human-approved ($newest)"; pending=1
